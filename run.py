@@ -3666,8 +3666,8 @@ def _collect_run_params() -> "dict | None":
                 f"New users per minute  (e.g. 5 = one every 12s)\n  Current: {state['spawn']}",
                 state["spawn"]))
         elif action == "think":
-            state["think"] = max(25, _edit(
-                f"Pause between messages  (min 25s)\n  Current: {state['think']}s",
+            state["think"] = max(5, _edit(
+                f"Pause between messages  (min 5s)\n  Current: {state['think']}s",
                 state["think"]))
         elif action == "timeout":
             state["timeout"] = max(15, _edit(
