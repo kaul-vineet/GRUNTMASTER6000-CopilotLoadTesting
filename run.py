@@ -3072,9 +3072,10 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
         style=vm["phase_style"],
     ))
     # ── Config FYI ───────────────────────────────────────────────────────────
+    # (User count is already in the header as "curr / target active" — not repeated here.)
     root.add_row(Text(
         f"  Mode: {params.get('mode', 'Concurrent')}   "
-        f"Users: {target}   Ramp: {params.get('spawn_rate', 0)}/min"
+        f"Ramp: {params.get('spawn_rate', 0)}/min"
         + (f"   Run time: {params.get('run_time', 0) // 60} min"
            if params.get('mode', 'Concurrent') == 'Concurrent' else ""),
         style=f"color({_G_DIM})",
@@ -3151,23 +3152,6 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
                     Text(""), Text(""), Text(""), Text(""), Text(""), Text(""), Text(""), Text(""),
                 )
         root.add_row(st)
-        if len(ramps_disp) >= 2:
-            def _ramp_spark(values: list) -> str:
-                blocks = "▁▂▃▄▅▆▇█"
-                mx = max(values) or 1
-                return "".join(blocks[min(int(v / mx * 7), 7)] for v in values)
-            _rv = ramps_disp
-            root.add_row(Text(
-                f"  RAMP TREND  "
-                f"Users {_ramp_spark([r['users'] for r in _rv])}  "
-                f"Req {_ramp_spark([r['requests'] for r in _rv])}  "
-                f"RPS {_ramp_spark([r['rps'] for r in _rv])}  "
-                f"p50 {_ramp_spark([r['p50'] for r in _rv])}  "
-                f"p95 {_ramp_spark([r['p95'] for r in _rv])}  "
-                f"p99 {_ramp_spark([r['p99'] for r in _rv])}  "
-                f"T/O {_ramp_spark([r['timeouts'] for r in _rv])}",
-                style=f"color({_G_DIM})",
-            ))
 
     # ── Profile stats ─────────────────────────────────────────────────────────
     root.add_row(Text("  PROFILE STATS", style="bold cyan"))
