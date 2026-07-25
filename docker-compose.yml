@@ -1,0 +1,26 @@
+# GRUNTMASTER 6000 — Docker Compose
+#
+# Interactive usage (setup wizard, device-code sign-in, live dashboard) requires
+# a TTY, so run with `docker compose run` (not `up`):
+#
+#   docker compose build
+#   docker compose run --rm gruntmaster --setup   # first-time setup / auth
+#   docker compose run --rm gruntmaster           # run a load test
+#
+# stdin_open + tty give the interactive terminal the wizard and dashboard need.
+
+services:
+  gruntmaster:
+    build: .
+    image: gruntmaster6000:latest
+    env_file:
+      - .env
+    stdin_open: true
+    tty: true
+    volumes:
+      # Persist credentials, profiles and encrypted sign-in tokens
+      - ./profiles:/app/profiles
+      # Edit your test scripts on the host, use them in the container
+      - ./utterances:/app/utterances
+      # Results + generated HTML reports appear on the host
+      - ./report:/app/report

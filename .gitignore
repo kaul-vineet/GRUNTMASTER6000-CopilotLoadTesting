@@ -1,7 +1,11 @@
 .env
 .claude/
 profiles/.tokens/
+profiles/.keyring/
 profiles/profiles.json
+profiles/last_run.json
+.venv/
+*.egg-info/
 __pycache__/
 *.pyc
 *.jtl

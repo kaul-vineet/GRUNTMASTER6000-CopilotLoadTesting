@@ -1,0 +1,23 @@
+# Local Python env — rebuilt inside the image
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+gruntmaster.egg-info/
+
+# Secrets and local state — supplied at runtime via env_file / volumes
+.env
+profiles/.tokens/
+profiles/.keyring/
+profiles/profiles.json
+
+# Generated output — mounted as a volume at runtime
+report/
+*.jtl
+
+# VCS / editor / misc
+.git/
+.gitignore
+.claude/
+images/

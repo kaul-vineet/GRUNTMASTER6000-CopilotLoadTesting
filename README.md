@@ -156,6 +156,46 @@ Or with Scoop: `scoop install charm-gum`
 
 Gum is a standalone program. It has no effect on Python or the virtual environment.
 
+#### 1e. Alternative: run in Docker (recommended for Windows-on-ARM / Linux / macOS)
+
+On a **Windows-on-ARM** machine the native ARM64 Python has no prebuilt wheels for
+`cryptography`, `geventhttpclient` and `brotli`, so `pip install` tries to compile
+them from source and fails unless you install Rust and the MSVC C++ Build Tools.
+Running the tool in a Linux container sidesteps this entirely — the container gets
+prebuilt wheels for every architecture, and `gum` is installed for you.
+
+**Prerequisites:** Docker Desktop installed and running.
+
+The interactive wizard, device-code sign-in and live dashboard all need a terminal,
+so use `docker compose run` (which allocates a TTY), not `docker compose up`.
+
+```
+# Build the image (first time, or after code/dependency changes)
+docker compose build
+
+# First-time setup + per-account sign-in (interactive wizard)
+docker compose run --rm gruntmaster --setup
+
+# Run a load test
+docker compose run --rm gruntmaster
+```
+
+How state is handled in the container:
+
+- **Credentials** come from your `.env` file (Compose reads it via `env_file`). Copy
+  `.env.example` to `.env` and fill in the values from Steps 2–3 before running.
+- The container has no OS keyring, so it uses a **file-based keyring backend**
+  (`keyrings.alt`) stored under `profiles/.keyring/`, and encrypted sign-in tokens
+  are stored under `profiles/.tokens/`. Both live on a mounted volume, so you only
+  sign in once — tokens survive container restarts.
+- **Volumes** map `profiles/`, `utterances/` and `report/` to your host, so your
+  test scripts and generated HTML reports are edited/viewed directly on Windows.
+- During `--setup`, MSAL prints a URL and a device code in the terminal; open the
+  URL in your normal browser on the host to complete sign-in for each account.
+
+> **Tip:** set `TOKEN_ENCRYPTION_PASSWORD` (16+ characters) in `.env` as a belt-and-
+> suspenders fallback for token encryption when running in containers.
+
 **What's next:** Step 2 walks through the Azure configuration your bot needs for authenticated testing.
 
 ---
@@ -287,8 +327,8 @@ This mode means your bot uses a custom OAuth 2.0 configuration — you chose the
    | **Service provider** | Azure Active Directory v2 |
    | **Client ID** | The Application (client) ID of the bot's resource app from Azure (the one you found in Step 2.2 — the app that has `access_as_user` exposed) |
    | **Client secret** | A client secret from that same app registration. To create one: Azure portal → App registrations → [bot resource app] → Certificates & secrets → New client secret. Copy the **Value** (not the Secret ID). |
-   | **Scopes** | `openid profile` |
-   | **Token exchange URL (for SSO)** | Leave blank unless you have a custom token exchange service. |
+   | **Scopes** | `openid profile` — **plus** `Sites.Read.All Files.Read.All` if the agent uses a SharePoint or OneDrive knowledge source (see 3.2.3). |
+   | **Token exchange URL (for SSO)** | For **unattended** load testing you must enable SSO so the tool can sign in silently: set this to the app's Application ID URI, e.g. `api://<AGENT_APP_ID>`. Leave blank only if you intend to sign in interactively (not suitable for load tests). |
 
 3. Click **Save**.
 
@@ -297,6 +337,27 @@ This mode means your bot uses a custom OAuth 2.0 configuration — you chose the
 > **Why a client secret is needed here:** In "Authenticate manually" mode, Copilot Studio acts as a confidential client when exchanging tokens — it needs a secret to authenticate itself to Entra ID. In "Authenticate with Microsoft" mode, Copilot Studio handles this internally and you never see it.
 
 > **Keep the client secret safe:** Add it to the bot's App Registration in Azure, but do not put it in the load test wizard — the wizard only needs the `AGENT_APP_ID` (the Client ID), not the secret.
+
+#### 3.2.3 SharePoint / OneDrive knowledge sources — extra Graph permissions
+
+If your agent answers from a **SharePoint** (or **OneDrive**) knowledge source *and* uses **Authenticate manually**, the bot searches SharePoint **as the signed-in user** via Microsoft Graph. Your custom app registration must be granted the Graph delegated permissions to do this — otherwise the bot returns generic fallbacks even though the same question works in the Copilot Studio **Test pane**.
+
+**Symptom:** Over Direct Line (this tool) every answer is *"I'm sorry, I'm not sure how to help with that"*, but the **exact same question answers correctly in the Copilot Studio Test pane.**
+
+**Fix:**
+
+1. Azure portal → **App registrations** → open the **bot resource app** (the app whose Client ID is your `AGENT_APP_ID`) → **API permissions**.
+2. **Add a permission → Microsoft Graph → Delegated permissions** → tick **`Sites.Read.All`** and **`Files.Read.All`** → **Add permissions**.
+3. Click **Grant admin consent for [your organisation]** and confirm — both must show a green **✓ Granted**.
+4. In Copilot Studio → **Settings → Security → Authentication** (Authenticate manually), set **Scopes** to:
+   ```
+   openid profile Sites.Read.All Files.Read.All
+   ```
+5. **Save**, then **Publish** the agent.
+
+> **Why the Test pane works but Direct Line does not:** The Test pane uses Copilot Studio's own Microsoft-managed first-party app, which already holds every Graph scope. Over Direct Line with manual auth, the identity flows from *your* custom app, so that app must carry the SharePoint Graph scopes itself.
+
+> **Managed vs manual trade-off:** "Authenticate with Microsoft" (managed) provides these Graph scopes automatically — but it disables the Direct Line channel this tool requires. "Authenticate manually" keeps Direct Line working, at the cost of configuring these scopes yourself.
 
 **What's next:** Step 4 runs the interactive setup wizard, which stores all your credentials and test accounts securely.
 
@@ -508,6 +569,8 @@ Select **▶ Start test** when ready.
 **Think time** — How long each simulated user pauses between messages to simulate a real person reading the reply. The actual pause varies randomly to avoid all users sending at exactly the same moment.
 
 **Reply timeout** — How long the tool waits for the bot to start replying before giving up. If the bot does not send its first word within this time, the request is recorded as a timeout. The minimum is 15 seconds.
+
+> ⚠️ **Authenticated SharePoint / OneDrive agents are slow to answer.** When the agent retrieves generative answers from a SharePoint knowledge source over the On-Behalf-Of flow (see 3.2.3), the first authenticated reply typically takes **55–90 seconds**. The default 30s Reply timeout will record these as false timeouts. Set **Reply timeout to at least 120 seconds** for SharePoint-backed agents. For headless runs (`locust -f run.py --headless`), set the environment variable **`GRUNTMASTER_RESPONSE_TIMEOUT=120`** since the interactive Run Configuration menu is skipped.
 
 **Max run time (safety cut-off)** — The test will force-stop at this number of minutes even if users are still in the middle of their scripts. This is a backstop for situations where many requests are timing out and scripts are taking much longer than expected. Set it higher than the "Est. total duration" shown below. Under normal conditions the test ends earlier on its own, and this cut-off is never reached.
 
@@ -779,11 +842,9 @@ Fix: Re-run the wizard and enter the correct value for `Bot Client ID (SSO)` —
 
 ### "IntegratedAuthenticationNotSupportedInChannel"
 
-The bot's authentication is set to "Authenticate with Microsoft" but you connected using a DirectLine Secret instead of through the Token Endpoint.
+The bot's authentication is set to **"Authenticate with Microsoft"** (managed), which **disables the Direct Line channel** this tool requires.
 
-Fix: In the wizard, either:
-- Clear the DirectLine Secret and use the Token Endpoint URL instead, or
-- Fill in the `Bot Client ID (SSO)` field, which enables SSO token exchange over the DirectLine channel.
+Fix: In Copilot Studio → **Settings → Security → Authentication**, switch the agent to **Authenticate manually** (see 3.2.2), then **Publish** the agent — Direct Line only picks up the change after a publish. If "Authenticate manually" is greyed out, first disconnect the agent's Microsoft 365-integrated channels (Teams, Microsoft 365 Copilot, SharePoint, Power Apps) from the **Channels** page, which unlocks the option.
 
 ---
 
@@ -803,6 +864,16 @@ Likely causes:
 1. `Bot Client ID (SSO)` is blank or wrong — the tool cannot acquire a token for the bot's scope.
 2. The token scope does not match. The tool uses `api://<AGENT_APP_ID>/access_as_user`. Verify this scope exists in the bot's app registration (Azure portal → the bot's app → Expose an API).
 3. The Token Exchange URL in the bot's OAuth connection does not match the bot's app ID.
+
+---
+
+### Bot answers "I'm not sure how to help" for everything (SharePoint knowledge)
+
+Every Direct Line answer is a generic fallback, but the **same question answers correctly in the Copilot Studio Test pane.**
+
+Cause: The agent uses a **SharePoint** or **OneDrive** knowledge source under "Authenticate manually", but your custom app registration lacks the Microsoft Graph delegated permissions needed to search SharePoint on the signed-in user's behalf. The Test pane works because it uses Copilot Studio's Microsoft-managed first-party app, which already has those scopes.
+
+Fix: See **section 3.2.3** — grant the bot's app the Graph delegated permissions `Sites.Read.All` + `Files.Read.All` (with admin consent), add `Sites.Read.All Files.Read.All` to the Copilot Studio auth connection **Scopes**, then **Publish**.
 
 ---
 

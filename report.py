@@ -10,6 +10,7 @@ Usage:
 import sys
 import math
 import base64
+import html as _html
 import argparse
 import subprocess
 from pathlib import Path
@@ -136,11 +137,27 @@ def _require_deps():
 def _pct(series, p: float) -> int:
     if len(series) == 0:
         return 0
-    return int(series.quantile(p))
+    # Nearest-rank (lower) percentile — matches run.py._pct and the AUDIT
+    # cross-check so the dashboard and this report report the same numbers.
+    return int(series.quantile(p, interpolation="lower"))
+
+
+def _fmt_s(ms) -> str:
+    """Format a millisecond latency as seconds for display (e.g. 31450 -> '31.4').
+    Percentiles/targets are computed in ms; only the rendered value is converted."""
+    try:
+        return f"{float(ms) / 1000.0:.1f}"
+    except (TypeError, ValueError):
+        return str(ms)
+
+
+def _esc(x) -> str:
+    """HTML-escape any value before it goes into report markup."""
+    return _html.escape(str(x))
 
 
 def _pills(items) -> str:
-    return "".join(f'<span class="pill">{i}</span>' for i in sorted(items))
+    return "".join(f'<span class="pill">{_esc(i)}</span>' for i in sorted(items))
 
 
 def _gfile_pick(start: str = ".") -> str:
@@ -186,7 +203,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     # ── Load — run_log_*.csv contains USER and SYSTEM rows; split them here ───
     _df_full = pd.read_csv(csv_path)
     if "event_category" in _df_full.columns:
-        df         = _df_full[_df_full["event_category"] == "USER"][_df_full["event"] == "UTTERANCE"].copy()
+        df         = _df_full[(_df_full["event_category"] == "USER") & (_df_full["event"] == "UTTERANCE")].copy()
         _df_system = _df_full[_df_full["event_category"] == "SYSTEM"].copy()
     else:
         df         = _df_full.copy()   # legacy file — treat all rows as utterances
@@ -275,7 +292,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
                 events=events_by_ramp.get(ramp_num, []),
             ))
 
-        # Knee detection on p95 series
+        # Knee detection on the RPS series — the ramp where throughput plateaus
         _DIRECTLINE_RPS_CAP = 133.0
         knee_ramp = -1
         if len(step_data) >= 3:
@@ -304,7 +321,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
                 f'<td>{s["users"]}</td>'
                 f'<td>{s["count"]:,}</td>'
                 f'<td>{s["rps"]:.2f}</td>'
-                f'<td>{s["p50"]:,}</td><td{p95s}>{s["p95"]:,}</td><td>{s["p99"]:,}</td>'
+                f'<td>{_fmt_s(s["p50"])}</td><td{p95s}>{_fmt_s(s["p95"])}</td><td>{_fmt_s(s["p99"])}</td>'
                 f'<td>{toc}</td>'
                 f'<td>{rlc}</td>'
                 f'</tr>'
@@ -325,7 +342,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
                     ec = "color:#94a3b8"
                 step_rows.append(
                     f'<tr><td colspan="9" style="padding:2px 14px 2px 28px;font-size:12px;{ec}">'
-                    f'{ts_e}&nbsp;&nbsp;{icon}&nbsp;&nbsp;{msg}</td></tr>'
+                    f'{_esc(ts_e)}&nbsp;&nbsp;{_esc(icon)}&nbsp;&nbsp;{_esc(msg)}</td></tr>'
                 )
         # ── Error breakdown ───────────────────────────────────────────────────
         _error_counts: dict = {}
@@ -355,7 +372,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
                     _tc = ""
                 _ex = _error_example.get(_et, "")[:120]
                 _eb_rows.append(
-                    f'<tr><td{_tc}>{_et}</td><td>{_cnt}</td><td style="color:#64748b;font-size:12px">{_ex}</td></tr>'
+                    f'<tr><td{_tc}>{_esc(_et)}</td><td>{_cnt}</td><td style="color:#64748b;font-size:12px">{_esc(_ex)}</td></tr>'
                 )
             error_breakdown_html = (
                 '<h2>Error Breakdown</h2>'
@@ -375,7 +392,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
                 '</p>'
                 '<table><thead><tr>'
                 '<th>Ramp</th><th>Users</th><th>Requests</th><th>RPS</th>'
-                '<th>p50 ms</th><th>p95 ms</th><th>p99 ms</th><th>T/O</th><th>Throttle</th>'
+                '<th>p50 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>T/O</th><th>Throttle</th>'
                 '</tr></thead><tbody>' + "".join(step_rows) + '</tbody></table>'
                 + error_breakdown_html
             )
@@ -561,8 +578,8 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
                     f'<span style="color:#22c55e">{abs(diff):.1f}% faster</span>'
                 )
                 rows.append(
-                    f"<tr><td>{a}</td><td>{b}</td><td>{badge}</td>"
-                    f"<td>{ma:,}ms</td><td>{mb:,}ms</td></tr>"
+                    f"<tr><td>{_esc(a)}</td><td>{_esc(b)}</td><td>{badge}</td>"
+                    f"<td>{_fmt_s(ma)}s</td><td>{_fmt_s(mb)}s</td></tr>"
                 )
         if rows:
             comparison_html = (
@@ -580,12 +597,12 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
         p95s = ' style="color:#ef4444;font-weight:700"' if not p["ok"] else ""
         return (
             f'<tr{rs}>'
-            f'<td><strong>{p["profile"]}</strong></td>'
+            f'<td><strong>{_esc(p["profile"])}</strong></td>'
             f'<td>{_pills(p["scenarios"])}</td>'
             f'<td>{p["requests"]:,}</td>'
-            f'<td>{p["p50"]:,}</td>'
-            f'<td{p95s}>{p["p95"]:,}</td>'
-            f'<td>{p["p99"]:,}</td>'
+            f'<td>{_fmt_s(p["p50"])}</td>'
+            f'<td{p95s}>{_fmt_s(p["p95"])}</td>'
+            f'<td>{_fmt_s(p["p99"])}</td>'
             f'<td>{p["timeouts"]}</td>'
             f'<td>{p["error_pct"]}</td>'
             f'</tr>'
@@ -596,12 +613,12 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
         p95s = ' style="color:#ef4444;font-weight:700"' if not s["ok"] else ""
         return (
             f'<tr{rs}>'
-            f'<td><strong>{s["scenario"]}</strong></td>'
+            f'<td><strong>{_esc(s["scenario"])}</strong></td>'
             f'<td>{_pills(s["profiles"])}</td>'
             f'<td>{s["requests"]:,}</td>'
-            f'<td>{s["p50"]:,}</td>'
-            f'<td{p95s}>{s["p95"]:,}</td>'
-            f'<td>{s["p99"]:,}</td>'
+            f'<td>{_fmt_s(s["p50"])}</td>'
+            f'<td{p95s}>{_fmt_s(s["p95"])}</td>'
+            f'<td>{_fmt_s(s["p99"])}</td>'
             f'<td>{s["timeouts"]}</td>'
             f'<td>{s["error_pct"]}</td>'
             f'</tr>'
@@ -609,19 +626,19 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
 
     def _utt_row(u, bl_deltas=None):
         dot  = ' <span title="MAD anomaly" style="color:#ef4444;font-size:10px">&#9679;</span>' if u["anomalies"] else ""
-        p999 = f'{u["p999"]:,}' if u["p999"] else "—"
+        p999 = f'{_fmt_s(u["p999"])}' if u["p999"] else "—"
         p95s = ' style="color:#ef4444;font-weight:700"' if u["p95"] > p95_target else ""
         ts   = ' style="color:#ef4444"' if u["timeouts"] > 0 else ""
         lbl  = u["utterance"][:80] + ("…" if len(u["utterance"]) > 80 else "")
         row = (
             f'<tr>'
-            f'<td>{lbl}{dot}</td>'
-            f'<td>{u["scenario"]}</td>'
+            f'<td>{_esc(lbl)}{dot}</td>'
+            f'<td>{_esc(u["scenario"])}</td>'
             f'<td>{_pills(u["profiles"])}</td>'
             f'<td>{u["requests"]:,}</td>'
-            f'<td>{u["p50"]:,}</td>'
-            f'<td{p95s}>{u["p95"]:,}</td>'
-            f'<td>{u["p99"]:,}</td>'
+            f'<td>{_fmt_s(u["p50"])}</td>'
+            f'<td{p95s}>{_fmt_s(u["p95"])}</td>'
+            f'<td>{_fmt_s(u["p99"])}</td>'
             f'<td{ts}>{u["timeouts"]} ({u["timeout_pct"]})</td>'
             f'<td style="color:#64748b">{p999}</td>'
         )
@@ -661,7 +678,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     csv_b64 = base64.b64encode(csv_path.read_bytes()).decode()
 
     notes_html = (
-        f'<div class="notes-box"><strong>Test notes:</strong> {notes}</div>'
+        f'<div class="notes-box"><strong>Test notes:</strong> {_esc(notes)}</div>'
         if notes else ""
     )
 
@@ -674,7 +691,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     _cfg_data["response_timeout_s"]  = response_timeout
     _cfg_data["silence_timeout_s"]   = silence_timeout
     for _ck, _cv in _cfg_data.items():
-        _cfg_rows.append(f'<tr><td><strong>{_ck}</strong></td><td>{_cv}</td></tr>')
+        _cfg_rows.append(f'<tr><td><strong>{_esc(_ck)}</strong></td><td>{_esc(_cv)}</td></tr>')
     if _cfg_rows:
         config_tab_content = (
             '<h2>Test Configuration</h2>'
@@ -691,6 +708,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     )
 
     # ── Final HTML with tabs ──────────────────────────────────────────────────
+    test_date_str = _esc(test_date_str)
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -709,8 +727,8 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     <div class="stat"><div class="v">{total_reqs:,}</div><div class="l">Requests</div></div>
     <div class="stat"><div class="v">{duration_str}</div><div class="l">Duration</div></div>
     <div class="stat"><div class="v">{error_rate:.1f}%</div><div class="l">Error rate</div></div>
-    <div class="stat"><div class="v">{overall_p95:,}ms</div><div class="l">p95</div></div>
-    <div class="stat">{pass_badge}<div class="l" style="margin-top:4px">vs {p95_target:,}ms target</div></div>
+    <div class="stat"><div class="v">{_fmt_s(overall_p95)}s</div><div class="l">p95</div></div>
+    <div class="stat">{pass_badge}<div class="l" style="margin-top:4px">vs {_fmt_s(p95_target)}s target</div></div>
     <div class="stat"><div class="v">{int(response_timeout)}s</div><div class="l">Reply timeout</div></div>
     <div class="stat"><div class="v">{int(silence_timeout)}s</div><div class="l">Silence window</div></div>
   </div>
@@ -735,7 +753,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     <table>
       <thead><tr>
         <th>Profile</th><th>Scenarios</th><th>Requests</th>
-        <th>p50 ms</th><th>p95 ms</th><th>p99 ms</th><th>Timeouts</th><th>Error %</th>
+        <th>p50 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>Timeouts</th><th>Error %</th>
       </tr></thead>
       <tbody>{profile_rows_html}</tbody>
     </table>
@@ -745,7 +763,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     <table>
       <thead><tr>
         <th>Scenario</th><th>Profiles</th><th>Requests</th>
-        <th>p50 ms</th><th>p95 ms</th><th>p99 ms</th><th>Timeouts</th><th>Error %</th>
+        <th>p50 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>Timeouts</th><th>Error %</th>
       </tr></thead>
       <tbody>{scenario_rows_html}</tbody>
     </table>
@@ -753,7 +771,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     {comparison_html}
 
     <div class="dl">
-      <a href="data:text/csv;base64,{csv_b64}" download="{csv_path.name}">
+      <a href="data:text/csv;base64,{csv_b64}" download="{_esc(csv_path.name)}">
         &darr;&nbsp; Download raw CSV
       </a>
     </div>
@@ -786,7 +804,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     <table>
       <thead><tr>
         <th>Utterance</th><th>Scenario</th><th>Profile(s)</th><th>Requests</th>
-        <th>p50 ms</th><th>p95 ms</th><th>p99 ms</th><th>Timeouts</th><th>p99.9 proj ms</th>
+        <th>p50 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>Timeouts</th><th>p99.9 proj (s)</th>
         {_bl_extra_headers}
       </tr></thead>
       <tbody id="utt-tbody">{utt_rows_html}</tbody>
