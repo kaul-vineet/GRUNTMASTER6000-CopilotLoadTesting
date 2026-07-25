@@ -380,8 +380,9 @@ def open_websocket(stream_url: str) -> websocket.WebSocket:
     return ws
 
 
-def send_utterance(conversation: Conversation, utterance: str) -> tuple[str, float]:
+def send_utterance(conversation: Conversation, utterance: str) -> tuple[str, float, float]:
     send_time = time.time()
+    send_mono = time.monotonic()
     resp = _session.post(
         f"{DIRECTLINE_BASE}/v3/directline/conversations/{conversation.id}/activities",
         headers={"Authorization": f"Bearer {conversation.token}", "Content-Type": "application/json"},
@@ -389,7 +390,7 @@ def send_utterance(conversation: Conversation, utterance: str) -> tuple[str, flo
         timeout=10,
     )
     resp.raise_for_status()
-    return resp.json()["id"], send_time
+    return resp.json()["id"], send_time, send_mono
 
 
 def send_token_exchange(conversation: Conversation, invoke_id: str, connection_name: str, aad_token: str):
@@ -425,7 +426,7 @@ def read_response(
     response_timeout: float = 30.0,
     conversation: Optional[Conversation] = None,
     aad_token: Optional[str] = None,
-    send_time: Optional[float] = None,
+    send_mono: Optional[float] = None,
 ) -> Response:
     """
     Reads WebSocket frames until the bot replies to activity_id.
@@ -433,13 +434,14 @@ def read_response(
     seconds after the last reply before declaring the response complete.
     When conversation + aad_token are provided, handles signin/tokenExchange
     invokes automatically so SSO-authenticated bots work without manual sign-in.
-    send_time: wall-clock time when send_utterance fired the POST (for true e2e latency).
+    send_mono: monotonic-clock reading captured when send_utterance fired the POST
+    (used for the true e2e latency delta — immune to wall-clock/NTP adjustments).
     """
     matched, last_match_time = [], None
-    start_time = send_time or time.time()
+    start_time = send_mono if send_mono is not None else time.monotonic()
 
     while True:
-        now       = time.time()
+        now       = time.monotonic()
         remaining = (
             _SILENCE_TIMEOUT - (now - last_match_time)
             if matched else
@@ -456,13 +458,13 @@ def read_response(
             if _run_state.dashboard is not None:
                 _run_state.dashboard.on_event("⚠", "DirectLine closed WebSocket — reconnecting")
             _log_event("⚠", "ws_closed", "DirectLine closed WebSocket")
-            return Response(activities=[], latency_ms=(time.time()-start_time)*1000,
+            return Response(activities=[], latency_ms=(time.monotonic()-start_time)*1000,
                             timed_out=True, ws_closed=True)
         except (websocket.WebSocketException, OSError) as _exc:
             if _run_state.dashboard is not None:
                 _run_state.dashboard.on_event("⚠", f"Stream error ({type(_exc).__name__}) — reconnecting")
             _log_event("⚠", "ws_error", f"Stream error: {type(_exc).__name__}")
-            return Response(activities=[], latency_ms=(time.time()-start_time)*1000,
+            return Response(activities=[], latency_ms=(time.monotonic()-start_time)*1000,
                             timed_out=True, ws_closed=True)
 
         if not raw:
@@ -508,16 +510,16 @@ def read_response(
                     if (activity.get("from", {}).get("role") == "bot"
                             and activity.get("replyToId") == activity_id):
                         matched.append(activity)
-                        last_match_time = time.time()
+                        last_match_time = time.monotonic()
                 continue
 
             if (activity.get("type") == "message"
                     and activity.get("from", {}).get("role") == "bot"
                     and activity.get("replyToId") == activity_id):
                 matched.append(activity)
-                last_match_time = time.time()
+                last_match_time = time.monotonic()
 
-    end_time   = last_match_time or time.time()
+    end_time   = last_match_time or time.monotonic()
     latency_ms = (end_time - start_time) * 1000
     return Response(activities=matched, latency_ms=latency_ms, timed_out=len(matched) == 0)
 
@@ -1289,7 +1291,7 @@ def _preflight_bot_check(profiles: list[dict]) -> bool:
         return False
 
     try:
-        activity_id, _ = _spin("Sending 'hi'…",
+        activity_id, _, _ = _spin("Sending 'hi'…",
                                lambda: send_utterance(conversation, "hi"))
         _ok_line("Sent 'hi'", "OK")
     except Exception as e:
@@ -2271,13 +2273,13 @@ class _WsTransport:
 
     def read(self, activity_id: str, response_timeout: float,
              conversation: "Conversation", aad_token: Optional[str],
-             send_time: float) -> "Response":
+             send_mono: float) -> "Response":
         return read_response(
             self._ws, activity_id,
             response_timeout=response_timeout,
             conversation=conversation,
             aad_token=aad_token,
-            send_time=send_time,
+            send_mono=send_mono,
         )
 
 
@@ -2298,12 +2300,12 @@ class _HttpTransport:
 
     def read(self, activity_id: str, response_timeout: float,
              conversation, aad_token: Optional[str],
-             send_time: float) -> "Response":
+             send_mono: float) -> "Response":
         return read_response_http(
             conversation, activity_id,
             response_timeout=response_timeout,
             aad_token=aad_token,
-            send_time=send_time,
+            send_mono=send_mono,
         )
 
 
@@ -2430,7 +2432,7 @@ class CopilotBaseUser(User):
 
         for _attempt in range(2):
             try:
-                activity_id, send_time = send_utterance(self.conversation, utterance)
+                activity_id, send_time, send_mono = send_utterance(self.conversation, utterance)
                 break
             except requests.exceptions.HTTPError as e:
                 if e.response is not None and e.response.status_code == 429:
@@ -2467,7 +2469,7 @@ class CopilotBaseUser(User):
         try:
             response = self._transport.read(
                 activity_id, response_timeout,
-                self.conversation, self.aad_token, send_time,
+                self.conversation, self.aad_token, send_mono,
             )
         except Exception as e:
             log.error("Read response failed: %s", e)
@@ -2565,14 +2567,14 @@ def read_response_http(
     activity_id: str,
     response_timeout: float = 30.0,
     aad_token: Optional[str] = None,
-    send_time: Optional[float] = None,
+    send_mono: Optional[float] = None,
 ) -> Response:
     matched: list[dict]       = []
     last_match_time           = None
-    start_time                = send_time or time.time()
+    start_time                = send_mono if send_mono is not None else time.monotonic()
     watermark: Optional[str]  = None
 
-    while time.time() - start_time < response_timeout:
+    while time.monotonic() - start_time < response_timeout:
         url = f"{DIRECTLINE_BASE}/v3/directline/conversations/{conversation.id}/activities"
         if watermark is not None:
             url += f"?watermark={watermark}"
@@ -2625,21 +2627,21 @@ def read_response_http(
                     if (activity.get("from", {}).get("role") == "bot"
                             and activity.get("replyToId") == activity_id):
                         matched.append(activity)
-                        last_match_time = time.time()
+                        last_match_time = time.monotonic()
                 continue
 
             if (activity.get("type") == "message"
                     and activity.get("from", {}).get("role") == "bot"
                     and activity.get("replyToId") == activity_id):
                 matched.append(activity)
-                last_match_time = time.time()
+                last_match_time = time.monotonic()
 
         if matched:
             break
 
         gevent.sleep(0.5)
 
-    end_time   = last_match_time or time.time()
+    end_time   = last_match_time or time.monotonic()
     latency_ms = (end_time - start_time) * 1000
     return Response(activities=matched, latency_ms=latency_ms, timed_out=len(matched) == 0)
 
