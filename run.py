@@ -2740,6 +2740,8 @@ class _DashboardState:
                         "requests":     count,
                         "rps":          round(count / self._ramp_window, 2),
                         "p50":          _pct(self._cur_ramp_ms, 0.50),
+                        "p75":          _pct(self._cur_ramp_ms, 0.75),
+                        "p85":          _pct(self._cur_ramp_ms, 0.85),
                         "p95":          _pct(self._cur_ramp_ms, 0.95),
                         "p99":          _pct(self._cur_ramp_ms, 0.99),
                         "timeouts":     self._cur_ramp_tout,
@@ -2809,6 +2811,8 @@ class _DashboardState:
                     "requests":     count,
                     "rps":          round(count / elapsed_in_window, 2),
                     "p50":          _pct(self._cur_ramp_ms, 0.50),
+                    "p75":          _pct(self._cur_ramp_ms, 0.75),
+                    "p85":          _pct(self._cur_ramp_ms, 0.85),
                     "p95":          _pct(self._cur_ramp_ms, 0.95),
                     "p99":          _pct(self._cur_ramp_ms, 0.99),
                     "timeouts":     self._cur_ramp_tout,
@@ -2908,6 +2912,8 @@ def _compute_dashboard_vm(snap: dict, runner, params: dict, state: "_DashboardSt
     all_tout  = sum(snap["tout"].values())
     all_reqs  = sum(len(v) for v in snap["times"].values()) + all_tout
     all_p50   = _pct(all_times, 0.50)
+    all_p75   = _pct(all_times, 0.75)
+    all_p85   = _pct(all_times, 0.85)
     all_p95   = _pct(all_times, 0.95)
     all_p99   = _pct(all_times, 0.99)
 
@@ -2965,13 +2971,15 @@ def _compute_dashboard_vm(snap: dict, runner, params: dict, state: "_DashboardSt
         tout  = snap["tout"].get(scenario, 0)
         reqs  = len(times) + tout
         p50_v = _pct(times, 0.50)
+        p75_v = _pct(times, 0.75)
+        p85_v = _pct(times, 0.85)
         p95_v = _pct(times, 0.95)
         p99_v = _pct(times, 0.99)
         rcol  = "bold red" if p95_v > p95_tgt else "white"
         disp  = state.profile_map.get(scenario, "")
         label = f"{disp} · {scenario}" if disp else scenario
         spark = _sparkline(snap["scenario_ts"].get(scenario, []))
-        scenario_rows.append((label, reqs, p50_v, p95_v, p99_v, tout, rcol, spark))
+        scenario_rows.append((label, reqs, p50_v, p75_v, p85_v, p95_v, p99_v, tout, rcol, spark))
 
     all_spark = _sparkline(snap["ts"])
     err_spark = _error_sparkline(snap["errs"])
@@ -3009,7 +3017,7 @@ def _compute_dashboard_vm(snap: dict, runner, params: dict, state: "_DashboardSt
     return {
         "elapsed": elapsed, "h": elapsed // 3600, "m": (elapsed % 3600) // 60, "s": elapsed % 60,
         "target": target, "curr": curr, "p95_tgt": p95_tgt,
-        "all_p50": all_p50, "all_p95": all_p95, "all_p99": all_p99,
+        "all_p50": all_p50, "all_p75": all_p75, "all_p85": all_p85, "all_p95": all_p95, "all_p99": all_p99,
         "all_reqs": all_reqs, "all_tout": all_tout,
         "err_rate": err_rate, "rps": rps,
         "health": health, "hcol": hcol,
@@ -3036,6 +3044,8 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
     p95_tgt   = vm["p95_tgt"]
     all_p95   = vm["all_p95"]
     all_p50   = vm["all_p50"]
+    all_p75   = vm["all_p75"]
+    all_p85   = vm["all_p85"]
     all_p99   = vm["all_p99"]
     all_reqs  = vm["all_reqs"]
     all_tout  = vm["all_tout"]
@@ -3113,11 +3123,12 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
         st.add_column("Requests", justify="right", min_width=8)
         st.add_column("RPS (~=live)", justify="right", min_width=10)
         st.add_column("p50 (s)",  justify="right", min_width=7)
+        st.add_column("p75 (s)",  justify="right", min_width=7)
+        st.add_column("p85 (s)",  justify="right", min_width=7)
         st.add_column("p95 (s)",  justify="right", min_width=7)
         st.add_column("p99 (s)",  justify="right", min_width=7)
         st.add_column("T/O",      justify="right", min_width=5)
         st.add_column("Throttle", justify="right", min_width=8)
-        events_by_ramp = vm["events_by_ramp"]
         knee_ramp      = vm["knee_ramp"]
 
         for s in ramps_disp:
@@ -3137,20 +3148,13 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
                 Text(str(s["requests"]), style=rstyle),
                 Text(rps_str,            style=rstyle),
                 Text(_fmt_s(s["p50"]),   style=rstyle),
+                Text(_fmt_s(s["p75"]),   style=rstyle),
+                Text(_fmt_s(s["p85"]),   style=rstyle),
                 Text(_fmt_s(s["p95"]),   style=p95c),
                 Text(_fmt_s(s["p99"]),   style=rstyle),
                 Text(str(s["timeouts"]), style=toc),
                 Text(str(s.get("rate_limited", 0)), style=rlc),
             )
-            for _ev in events_by_ramp.get(s["ramp"], []):
-                _ic = _ev["icon"]
-                if _ic in ("▶", "→", "■"):   # skip lifecycle events — shown in EVENTS feed
-                    continue
-                _es = "bold red" if _ic in ("⚡", "✗") else ("bold yellow" if _ic == "⚠" else "dim")
-                st.add_row(
-                    Text(f"    {_ev['ts']}  {_ic}  {_ev['message']}", style=_es),
-                    Text(""), Text(""), Text(""), Text(""), Text(""), Text(""), Text(""), Text(""),
-                )
         root.add_row(st)
 
     # ── Profile stats ─────────────────────────────────────────────────────────
@@ -3160,16 +3164,20 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
     tbl.add_column("User · Scenario", min_width=32)
     tbl.add_column("Requests", justify="right", min_width=8)
     tbl.add_column("p50 (s)",  justify="right", min_width=7)
+    tbl.add_column("p75 (s)",  justify="right", min_width=7)
+    tbl.add_column("p85 (s)",  justify="right", min_width=7)
     tbl.add_column("p95 (s)",  justify="right", min_width=7)
     tbl.add_column("p99 (s)",  justify="right", min_width=7)
     tbl.add_column("T/O",      justify="right", min_width=5)
     tbl.add_column("p95 / 30s buckets", min_width=22)
 
-    for label, reqs, p50_v, p95_v, p99_v, tout, rcol, spark in vm["scenario_rows"]:
+    for label, reqs, p50_v, p75_v, p85_v, p95_v, p99_v, tout, rcol, spark in vm["scenario_rows"]:
         tbl.add_row(
             Text(label, style=rcol),
             Text(str(reqs),  style=rcol),
             Text(_fmt_s(p50_v)),
+            Text(_fmt_s(p75_v)),
+            Text(_fmt_s(p85_v)),
             Text(_fmt_s(p95_v), style=rcol),
             Text(_fmt_s(p99_v)),
             Text(str(tout),  style="bold red" if tout > 0 else "white"),
@@ -3180,6 +3188,8 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
         Text("ALL USERS", style="bold white"),
         Text(str(all_reqs), style="bold white"),
         Text(_fmt_s(all_p50),  style="bold white"),
+        Text(_fmt_s(all_p75),  style="bold white"),
+        Text(_fmt_s(all_p85),  style="bold white"),
         Text(_fmt_s(all_p95),  style="bold red" if all_p95 > p95_tgt else "bold white"),
         Text(_fmt_s(all_p99),  style="bold white"),
         Text(str(all_tout), style="bold red" if all_tout > 0 else "bold white"),
@@ -3201,34 +3211,28 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
 
         def _utt_rows(ut: Table, rows: list, col: str):
             for utt, profile_k, times, tout_u, bot_resp in rows[:4]:
-                p50_u  = _pct(times, 0.50)
                 p95_u  = _pct(times, 0.95)
-                cnt    = len(times) + tout_u
                 plabel = (profile_k[:20] + "…") if len(profile_k) > 21 else profile_k
                 ulabel = (utt[:28] + "…") if len(utt) > 29 else utt
                 _resp  = " ".join(bot_resp.split())
                 rlabel = (_resp[:38] + "…") if len(_resp) > 39 else _resp
                 ut.add_row(Text(plabel, style="cyan"),
                            Text(ulabel, style=col),
-                           Text(_fmt_s(p50_u), style=col),
                            Text(_fmt_s(p95_u), style=col),
-                           Text(str(cnt)),
                            Text(rlabel, style="dim"))
 
         root.add_row(Text("  UTTERANCES", style="bold cyan"))
         ut = Table(show_header=True, header_style="bold cyan",
                    box=rich_box.SIMPLE_HEAD, padding=(0, 2), expand=True)
-        ut.add_column("Profile",      min_width=22)
-        ut.add_column("Utterance",    min_width=30)
-        ut.add_column("p50 (s)",      justify="right", min_width=7)
-        ut.add_column("p95 (s)",      justify="right", min_width=7)
-        ut.add_column("Count",        justify="right", min_width=6)
-        ut.add_column("Bot Response", min_width=40)
+        ut.add_column("Profile",       min_width=22)
+        ut.add_column("Utterance",     min_width=30)
+        ut.add_column("Response (s)",  justify="right", min_width=12)
+        ut.add_column("Bot Response",  min_width=40)
         ut.add_row(Text("── slowest ──", style="dim"),
-                   Text(""), Text(""), Text(""), Text(""), Text(""))
+                   Text(""), Text(""), Text(""))
         _utt_rows(ut, slowest, "bold red")
         ut.add_row(Text("── fastest ──", style="dim"),
-                   Text(""), Text(""), Text(""), Text(""), Text(""))
+                   Text(""), Text(""), Text(""))
         _utt_rows(ut, fastest, "bold green")
         root.add_row(ut)
 
@@ -3252,7 +3256,9 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
     # ── Acronym legend ────────────────────────────────────────────────────────
     legend = (
         "  p50 = median response (s)   "
-        "p95 = 95% of requests faster than this (s)   "
+        "p75 = 75% of requests faster than this (s)   "
+        "p85 = 85% faster than this (s)   "
+        "p95 = 95% faster than this (s)   "
         "p99 = 99th percentile (s)   "
         "T/O = Timeout   "
         "RPS = Requests / second"

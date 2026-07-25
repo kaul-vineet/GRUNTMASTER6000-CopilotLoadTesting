@@ -282,12 +282,14 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
             last_u = int(grp["user_count"].iloc[-1]) if has_user_count else 0
             rps_v  = count / RAMP_WINDOW
             p50v   = _pct(ms_grp, 0.50)
+            p75v   = _pct(ms_grp, 0.75)
+            p85v   = _pct(ms_grp, 0.85)
             p95v   = _pct(ms_grp, 0.95)
             p99v   = _pct(ms_grp, 0.99)
             ramp_num = int(ridx) + 1
             step_data.append(dict(
                 ramp=ramp_num, users=last_u, count=count, rps=rps_v,
-                p50=p50v, p95=p95v, p99=p99v, tout=tout,
+                p50=p50v, p75=p75v, p85=p85v, p95=p95v, p99=p99v, tout=tout,
                 rate_limited=ramp_429.get(ramp_num, 0),
                 events=events_by_ramp.get(ramp_num, []),
             ))
@@ -321,7 +323,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
                 f'<td>{s["users"]}</td>'
                 f'<td>{s["count"]:,}</td>'
                 f'<td>{s["rps"]:.2f}</td>'
-                f'<td>{_fmt_s(s["p50"])}</td><td{p95s}>{_fmt_s(s["p95"])}</td><td>{_fmt_s(s["p99"])}</td>'
+                f'<td>{_fmt_s(s["p50"])}</td><td>{_fmt_s(s["p75"])}</td><td>{_fmt_s(s["p85"])}</td><td{p95s}>{_fmt_s(s["p95"])}</td><td>{_fmt_s(s["p99"])}</td>'
                 f'<td>{toc}</td>'
                 f'<td>{rlc}</td>'
                 f'</tr>'
@@ -341,7 +343,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
                 else:
                     ec = "color:#94a3b8"
                 step_rows.append(
-                    f'<tr><td colspan="9" style="padding:2px 14px 2px 28px;font-size:12px;{ec}">'
+                    f'<tr><td colspan="11" style="padding:2px 14px 2px 28px;font-size:12px;{ec}">'
                     f'{_esc(ts_e)}&nbsp;&nbsp;{_esc(icon)}&nbsp;&nbsp;{_esc(msg)}</td></tr>'
                 )
         # ── Error breakdown ───────────────────────────────────────────────────
@@ -392,7 +394,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
                 '</p>'
                 '<table><thead><tr>'
                 '<th>Ramp</th><th>Users</th><th>Requests</th><th>RPS</th>'
-                '<th>p50 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>T/O</th><th>Throttle</th>'
+                '<th>p50 (s)</th><th>p75 (s)</th><th>p85 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>T/O</th><th>Throttle</th>'
                 '</tr></thead><tbody>' + "".join(step_rows) + '</tbody></table>'
                 + error_breakdown_html
             )
@@ -407,7 +409,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
         scenarios = sorted(grp["scenario"].unique().tolist())
         profile_rows_data.append(dict(
             profile=profile, scenarios=scenarios, requests=reqs,
-            p50=_pct(ms, 0.50), p95=p95v, p99=_pct(ms, 0.99),
+            p50=_pct(ms, 0.50), p75=_pct(ms, 0.75), p85=_pct(ms, 0.85), p95=p95v, p99=_pct(ms, 0.99),
             timeouts=tout, error_pct=f"{tout/max(1,reqs)*100:.1f}%",
             ok=p95v <= p95_target,
         ))
@@ -422,7 +424,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
         profiles_for_scenario = sorted(grp["base_profile"].unique().tolist())
         scenario_rows_data.append(dict(
             scenario=scenario, profiles=profiles_for_scenario, requests=reqs,
-            p50=_pct(ms, 0.50), p95=p95v, p99=_pct(ms, 0.99),
+            p50=_pct(ms, 0.50), p75=_pct(ms, 0.75), p85=_pct(ms, 0.85), p95=p95v, p99=_pct(ms, 0.99),
             timeouts=tout, error_pct=f"{tout/max(1,reqs)*100:.1f}%",
             ok=p95v <= p95_target,
         ))
@@ -453,7 +455,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
             utterance=str(utt), scenario=scenario,
             profiles=profiles_for_utt,
             requests=reqs,
-            p50=_pct(ms, 0.50), p95=_pct(ms, 0.95), p99=_pct(ms, 0.99),
+            p50=_pct(ms, 0.50), p75=_pct(ms, 0.75), p85=_pct(ms, 0.85), p95=_pct(ms, 0.95), p99=_pct(ms, 0.99),
             timeouts=tout, timeout_pct=f"{tout/max(1,reqs)*100:.1f}%",
             anomalies=anomalies, p999=p999,
         ))
@@ -601,6 +603,8 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
             f'<td>{_pills(p["scenarios"])}</td>'
             f'<td>{p["requests"]:,}</td>'
             f'<td>{_fmt_s(p["p50"])}</td>'
+            f'<td>{_fmt_s(p["p75"])}</td>'
+            f'<td>{_fmt_s(p["p85"])}</td>'
             f'<td{p95s}>{_fmt_s(p["p95"])}</td>'
             f'<td>{_fmt_s(p["p99"])}</td>'
             f'<td>{p["timeouts"]}</td>'
@@ -617,6 +621,8 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
             f'<td>{_pills(s["profiles"])}</td>'
             f'<td>{s["requests"]:,}</td>'
             f'<td>{_fmt_s(s["p50"])}</td>'
+            f'<td>{_fmt_s(s["p75"])}</td>'
+            f'<td>{_fmt_s(s["p85"])}</td>'
             f'<td{p95s}>{_fmt_s(s["p95"])}</td>'
             f'<td>{_fmt_s(s["p99"])}</td>'
             f'<td>{s["timeouts"]}</td>'
@@ -637,6 +643,8 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
             f'<td>{_pills(u["profiles"])}</td>'
             f'<td>{u["requests"]:,}</td>'
             f'<td>{_fmt_s(u["p50"])}</td>'
+            f'<td>{_fmt_s(u["p75"])}</td>'
+            f'<td>{_fmt_s(u["p85"])}</td>'
             f'<td{p95s}>{_fmt_s(u["p95"])}</td>'
             f'<td>{_fmt_s(u["p99"])}</td>'
             f'<td{ts}>{u["timeouts"]} ({u["timeout_pct"]})</td>'
@@ -753,7 +761,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     <table>
       <thead><tr>
         <th>Profile</th><th>Scenarios</th><th>Requests</th>
-        <th>p50 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>Timeouts</th><th>Error %</th>
+        <th>p50 (s)</th><th>p75 (s)</th><th>p85 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>Timeouts</th><th>Error %</th>
       </tr></thead>
       <tbody>{profile_rows_html}</tbody>
     </table>
@@ -763,7 +771,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     <table>
       <thead><tr>
         <th>Scenario</th><th>Profiles</th><th>Requests</th>
-        <th>p50 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>Timeouts</th><th>Error %</th>
+        <th>p50 (s)</th><th>p75 (s)</th><th>p85 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>Timeouts</th><th>Error %</th>
       </tr></thead>
       <tbody>{scenario_rows_html}</tbody>
     </table>
@@ -804,7 +812,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     <table>
       <thead><tr>
         <th>Utterance</th><th>Scenario</th><th>Profile(s)</th><th>Requests</th>
-        <th>p50 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>Timeouts</th><th>p99.9 proj (s)</th>
+        <th>p50 (s)</th><th>p75 (s)</th><th>p85 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>Timeouts</th><th>p99.9 proj (s)</th>
         {_bl_extra_headers}
       </tr></thead>
       <tbody id="utt-tbody">{utt_rows_html}</tbody>
