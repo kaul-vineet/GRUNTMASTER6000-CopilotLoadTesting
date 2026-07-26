@@ -152,19 +152,40 @@ agent's Power Platform message capacity is usually the real ceiling.
 
 ## 📈 Reading results
 
-**Live dashboard** (updates every ~0.5s): health indicator, ramp-step table, per-profile
-**PROFILE STATS**, an extremes **UTTERANCES** table, and an **EVENTS** feed.
+### 🖥️ Live dashboard
 
-PROFILE STATS columns:
+Everything runs in the terminal and refreshes ~2×/second:
+
+![GRUNTMASTER 6000 live dashboard](images/dashboard-live.png)
+
+Reading it top to bottom:
+
+- **① Header** — `● 1 / 1 active` and `● RUNNING` status, plus the elapsed clock (top-right).
+- **② Agent + summary** — target **Agent** name and id, **Mode** (Concurrent/Pipeline), ramp
+  rate, live **RPS**, **Errors %**, and a **p95 bar** vs your target (`15.2s / 2.0s ⚠` = over target).
+- **③ RAMP STEPS** — one row per 60-second window: users, requests, RPS and the full percentile
+  ladder (p50/p75/p85/p95/p99), timeouts (**T/O**) and **Throttle** (429s). The live window is
+  marked `▶`; a red percentile means it's above target.
+- **④ PROFILE STATS** — one row per user account (+ **ALL USERS**), with the columns below and a
+  per-row **Latency trend / 10m** sparkline. Plain-English verdict lines under it name the number
+  to trust and flag low sample counts.
+- **⑤ UTTERANCES** — the slowest (red) and fastest (green) messages with their response time and
+  the actual **Bot Response** text — the quickest way to spot which questions are slow.
+- **⑥ EVENTS** — timestamped feed: warm-up completion, spawns, reconnects, timeouts, 429s.
+- **⑦ Legend + hint** — percentile glossary and `Press Q to stop test now (skips report…)`.
+
+**PROFILE STATS columns:**
 - **Typical** — median (p50); outlier-proof, the number to trust.
 - **p85 / Tail p95** — percentiles; p95 shown in `(parens)` when <100 samples (not yet reliable).
 - **Worst** — single slowest reply; far above Typical = an isolated outlier.
-- **Shape** — self-relative distribution skew (Bowley): *Mostly fast* / *Balanced* / *Mostly slow*.
+- **Shape** — self-relative distribution skew (Bowley): *Mostly fast* (quick with a slow tail) /
+  *Balanced* (evenly spread) / *Mostly slow* (bulk near the slow end); `—` = too few samples.
 
-Each row also gets a plain-English verdict naming which number to trust and whether latency is
-trending slower.
+> 💡 The screenshot above shows a single warm-up-only sample (`n = 1`) still returning a
+> fallback — hence the ⚠ low-sample verdicts and the amber over-target p95. In a real run these
+> fill in across many samples.
 
-**Files** (in `report/`, one set per run):
+### 📄 Files
 - `report_*.html` — 4 tabs: Summary, Response-time distribution (box/whisker + heatmap),
   Utterance analysis (filterable, baseline diff), Config. Sortable tables.
 - `detail_*.csv` — one row per message exchange (open in Excel/Power BI).
