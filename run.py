@@ -1313,9 +1313,10 @@ def _preflight_bot_check(profiles: list[dict]) -> bool:
     except Exception:
         pass
 
-    print("  Waiting for bot reply (30s)…", flush=True)
+    _pf_timeout = max(30.0, float(test_config.get("response_timeout", 30.0)))
+    print(f"  Waiting for bot reply ({int(_pf_timeout)}s)…", flush=True)
     try:
-        response = read_response(ws, activity_id, response_timeout=30.0,
+        response = read_response(ws, activity_id, response_timeout=_pf_timeout,
                                  conversation=conversation,
                                  aad_token=aad_token_for_bot)
     except Exception as e:
@@ -1333,7 +1334,7 @@ def _preflight_bot_check(profiles: list[dict]) -> bool:
         pass
 
     if response.timed_out:
-        _fail_line("Bot response", "NO REPLY (30s timeout)")
+        _fail_line("Bot response", f"NO REPLY ({int(_pf_timeout)}s timeout)")
         print()
         _gprint(
             "  No matching reply received.\n\n"
