@@ -363,6 +363,25 @@ If your agent answers from a **SharePoint** (or **OneDrive**) knowledge source *
 
 ---
 
+#### 3.3 Switching to a different agent later
+
+A common question: *"I already have this working against one agent. To point it at a different agent, do I just swap the DirectLine Secret?"*
+
+**Yes — as long as the new agent uses the same authentication app registration as the old one** (same Bot Client ID / `AGENT_APP_ID`, same scope, same SSO connection). Each agent has its own Direct Line channel, so the secret always changes, but that is the only thing you need to change: your load-test client app, its `access_as_user` grant, admin consent, and each test user's cached token all stay the same and keep working.
+
+**To switch:**
+
+1. Copy the **DirectLine Secret** from the new agent (Copilot Studio → Settings → Channels → Direct Line).
+2. Update it through the **setup wizard** (see the gotcha below — do not just edit a file).
+3. Re-run and confirm the pre-flight `Target agent id` and `Agent` name match the new agent.
+
+> **⚠ Critical gotcha — change credentials through the wizard, not by editing files.**
+> The tool reads the **saved credential store first** and only falls back to `.env`/environment variables. If you change the DirectLine Secret by editing `.env` (or a file) by hand, the previously saved value **still wins** and you will keep hitting the **old** agent. Always update the secret via the setup wizard (or re-run setup), which writes to the secure store. (In Docker the store is a keyring persisted under the mounted `profiles/` volume — same rule applies.)
+
+> **Verify you landed on the right agent.** The pre-flight check prints `Target agent id` and the agent's display name (`Agent …`) after it sends its first message. Confirm both match the agent you intended before trusting a run.
+
+---
+
 ### Step 4: Run the setup wizard
 
 > **Step 4 of 5**
@@ -874,6 +893,16 @@ Every Direct Line answer is a generic fallback, but the **same question answers 
 Cause: The agent uses a **SharePoint** or **OneDrive** knowledge source under "Authenticate manually", but your custom app registration lacks the Microsoft Graph delegated permissions needed to search SharePoint on the signed-in user's behalf. The Test pane works because it uses Copilot Studio's Microsoft-managed first-party app, which already has those scopes.
 
 Fix: See **section 3.2.3** — grant the bot's app the Graph delegated permissions `Sites.Read.All` + `Files.Read.All` (with admin consent), add `Sites.Read.All Files.Read.All` to the Copilot Studio auth connection **Scopes**, then **Publish**.
+
+---
+
+### Still talking to the old agent after changing the DirectLine Secret
+
+You updated the secret but the bot's answers (or the pre-flight `Target agent id` / `Agent` name) still show the previous agent.
+
+Cause: The tool reads the **saved credential store first** and only falls back to `.env`/environment variables. Editing `.env` (or any file) by hand does not take effect because the previously saved credential overrides it.
+
+Fix: Change the DirectLine Secret through the **setup wizard** (or re-run setup), which writes to the secure store. Then re-run and confirm the pre-flight `Target agent id` and `Agent` name match the agent you intended. See **section 3.3** for the full agent-switch checklist. (In Docker the store is a keyring under the mounted `profiles/` volume — the same "wizard, not file" rule applies.)
 
 ---
 
