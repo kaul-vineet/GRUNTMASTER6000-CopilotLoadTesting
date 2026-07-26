@@ -2869,6 +2869,97 @@ def _fmt_s(ms) -> str:
         return str(ms)
 
 
+# Reliability / shape thresholds for _latency_verdict. Validated against an
+# adversarial suite (bimodal, time-trend, lone spike, low-n, degenerate inputs).
+_LV_MIN_N      = 5      # below this, even the median is only indicative
+_LV_TAIL_N     = 100    # need ~5 samples above p95 → n ≥ 5/0.05 before p95 is trusted
+_LV_TIGHT_TAIL = 1.30   # p95/median ≤ this  → consistent
+_LV_TIGHT_MAX  = 1.50   # worst/median ≤ this → no meaningful spike
+_LV_BROAD_TAIL = 1.50   # p95/median ≥ this  → a real slow population (or 2nd mode)
+_LV_SPIKE_MAX  = 2.00   # worst/median ≥ this (with a tight tail) → a lone outlier
+_LV_TREND_R    = 1.30   # 2nd-half median vs 1st-half median ratio → a time trend
+
+
+def _latency_verdict(times_ms: list, p95_target_ms: float = 0.0) -> dict:
+    """Plain-English read on one row's response times (ms), in completion/time order.
+
+    Answers 'which number should I trust, and is the tail one fluke or a pattern?'
+    Uses percentile *ratios* (not outlier tests, which cannot see a balanced 2nd
+    mode) plus a time-order trend check. Robust to low n, bimodal, trend, spike and
+    degenerate inputs — see the adversarial cases the design was validated against.
+    Returns display fields + a one-line verdict.
+    """
+    n = len(times_ms)
+    if n == 0:
+        return {"n": 0, "typ": 0, "p95": 0, "worst": 0, "tier": "none",
+                "trend": None, "slow_frac": 0.0, "tail_reliable": False,
+                "icon": " ", "verdict": "no measured replies (all timeouts/errors?) — nothing to report"}
+
+    med   = _pct(times_ms, 0.50)
+    p95   = _pct(times_ms, 0.95)
+    worst = max(times_ms)
+    d     = max(1, med)                      # guard median == 0 (sub-ms/degenerate)
+    tail_r    = p95 / d
+    max_r     = worst / d
+    slow_frac = sum(1 for v in times_ms if v > med * 1.5) / n
+
+    # Time trend: compare first-half vs second-half median (needs enough points).
+    trend = None
+    if n >= 20:
+        h  = n // 2
+        m1 = _pct(times_ms[:h], 0.50)
+        m2 = _pct(times_ms[h:], 0.50)
+        if   m2 >= m1 * _LV_TREND_R: trend = "rising"
+        elif m1 >= m2 * _LV_TREND_R: trend = "falling"
+
+    if   tail_r <= _LV_TIGHT_TAIL and max_r <= _LV_TIGHT_MAX: tier = "tight"
+    elif tail_r >= _LV_BROAD_TAIL:                            tier = "broad"
+    elif max_r  >= _LV_SPIKE_MAX:                             tier = "spike"
+    else:                                                     tier = "skewed"
+
+    tail_reliable = n >= _LV_TAIL_N
+    low = not tail_reliable
+
+    # A clear time trend overrides a broad/skewed shape (it's degradation, not a 2nd mode).
+    if trend and tier in ("broad", "skewed"):
+        h    = n // 2
+        word = "slower over time (degrading)" if trend == "rising" else "faster over time (recovering)"
+        sc   = (f"latency is trending {word} — "
+                f"{_fmt_s(_pct(times_ms[:h], 0.50))}s→{_fmt_s(_pct(times_ms[h:], 0.50))}s.")
+        tier = "trend-up" if trend == "rising" else "trend-down"
+    elif tier == "tight":
+        sc = "latency is consistent."
+    elif tier == "spike":
+        sc = (f"worst {_fmt_s(worst)}s — possibly a fluke at this sample size."
+              if low else
+              f"worst {_fmt_s(worst)}s = a few isolated slow replies; Typical unaffected.")
+    elif tier == "broad":
+        sc = (f"early sign ~{slow_frac * 100:.0f}% of replies slower (up to {_fmt_s(worst)}s) — confirm with more data."
+              if low else
+              f"~{slow_frac * 100:.0f}% of replies much slower (up to {_fmt_s(worst)}s) — a real slow group, not a fluke.")
+    else:  # skewed
+        sc = f"moderate spread (worst {_fmt_s(worst)}s)."
+
+    # Health vs the configured p95 target — only trustworthy once the tail is reliable.
+    hc = ""
+    if p95_target_ms and tail_reliable and p95 > p95_target_ms:
+        hc = f" ⚠ p95 over target {_fmt_s(p95_target_ms)}s."
+
+    if n < _LV_MIN_N:
+        verdict = f"only {n} sample{'' if n == 1 else 's'} — indicative only; Typical ~{_fmt_s(med)}s."
+        icon    = "⚠"
+    elif low:
+        verdict = f"{n} samples — trust Typical {_fmt_s(med)}s; " + sc + hc
+        icon    = "⚠" if (tier in ("broad", "trend-up") or hc) else "•"
+    else:
+        verdict = f"{n} samples — Tail p95 {_fmt_s(p95)}s reliable. " + sc + hc
+        icon    = "⚠" if (tier in ("broad", "trend-up") or hc) else "✓"
+
+    return {"n": n, "typ": med, "p95": p95, "worst": worst, "tier": tier,
+            "trend": trend, "slow_frac": slow_frac, "tail_reliable": tail_reliable,
+            "icon": icon, "verdict": verdict}
+
+
 def _find_knee(values: list) -> int:
     """Return index of the knee point using perpendicular distance from the line start→end.
     Returns -1 if too few points to detect a knee."""
@@ -2888,7 +2979,7 @@ def _find_knee(values: list) -> int:
     return distances.index(max(distances))
 
 
-def _sparkline(ts: list, width: int = 20, bucket_s: float = 30.0) -> str:
+def _sparkline(ts: list, width: int = 20, bucket_s: float = 600.0) -> str:
     if not ts:
         return "▁" * width
     blocks  = "▁▂▃▄▅▆▇█"
@@ -2903,7 +2994,7 @@ def _sparkline(ts: list, width: int = 20, bucket_s: float = 30.0) -> str:
     return line[-width:].ljust(width, "▁")
 
 
-def _error_sparkline(errs: list, width: int = 20, bucket_s: float = 30.0) -> str:
+def _error_sparkline(errs: list, width: int = 20, bucket_s: float = 600.0) -> str:
     """Count errors per time bucket — correct for low error rates where p95 always returns 0."""
     if not errs:
         return "▁" * width
@@ -2934,6 +3025,8 @@ def _compute_dashboard_vm(snap: dict, runner, params: dict, state: "_DashboardSt
     all_p85   = _pct(all_times, 0.85)
     all_p95   = _pct(all_times, 0.95)
     all_p99   = _pct(all_times, 0.99)
+    all_worst = max(all_times) if all_times else 0
+    all_vdict = _latency_verdict(all_times, p95_tgt)
 
     err_rate = (all_tout / max(1, all_reqs)) * 100
     recent   = [t for t, _ in snap["ts"] if t > elapsed - 30]
@@ -2989,15 +3082,14 @@ def _compute_dashboard_vm(snap: dict, runner, params: dict, state: "_DashboardSt
         tout  = snap["tout"].get(scenario, 0)
         reqs  = len(times) + tout
         p50_v = _pct(times, 0.50)
-        p75_v = _pct(times, 0.75)
-        p85_v = _pct(times, 0.85)
         p95_v = _pct(times, 0.95)
-        p99_v = _pct(times, 0.99)
+        worst_v = max(times) if times else 0
+        vdict = _latency_verdict(times, p95_tgt)
         rcol  = "bold red" if p95_v > p95_tgt else "white"
         disp  = state.profile_map.get(scenario, "")
         label = f"{disp} · {scenario}" if disp else scenario
         spark = _sparkline(snap["scenario_ts"].get(scenario, []))
-        scenario_rows.append((label, reqs, p50_v, p75_v, p85_v, p95_v, p99_v, tout, rcol, spark))
+        scenario_rows.append((label, reqs, p50_v, p95_v, worst_v, tout, rcol, spark, vdict))
 
     all_spark = _sparkline(snap["ts"])
     err_spark = _error_sparkline(snap["errs"])
@@ -3036,6 +3128,7 @@ def _compute_dashboard_vm(snap: dict, runner, params: dict, state: "_DashboardSt
         "elapsed": elapsed, "h": elapsed // 3600, "m": (elapsed % 3600) // 60, "s": elapsed % 60,
         "target": target, "curr": curr, "p95_tgt": p95_tgt,
         "all_p50": all_p50, "all_p75": all_p75, "all_p85": all_p85, "all_p95": all_p95, "all_p99": all_p99,
+        "all_worst": all_worst, "all_vdict": all_vdict,
         "all_reqs": all_reqs, "all_tout": all_tout,
         "err_rate": err_rate, "rps": rps,
         "health": health, "hcol": hcol,
@@ -3180,44 +3273,51 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
     tbl = Table(show_header=True, header_style="bold cyan",
                 box=rich_box.SIMPLE_HEAD, padding=(0, 2), expand=True)
     tbl.add_column("User · Scenario", min_width=32)
-    tbl.add_column("Requests", justify="right", min_width=8)
-    tbl.add_column("p50 (s)",  justify="right", min_width=7)
-    tbl.add_column("p75 (s)",  justify="right", min_width=7)
-    tbl.add_column("p85 (s)",  justify="right", min_width=7)
-    tbl.add_column("p95 (s)",  justify="right", min_width=7)
-    tbl.add_column("p99 (s)",  justify="right", min_width=7)
+    tbl.add_column("n",        justify="right", min_width=6)
+    tbl.add_column("Typical",  justify="right", min_width=8)
+    tbl.add_column("Tail p95", justify="right", min_width=9)
+    tbl.add_column("Worst",    justify="right", min_width=8)
     tbl.add_column("T/O",      justify="right", min_width=5)
-    tbl.add_column("p95 / 30s buckets", min_width=22)
+    tbl.add_column("Latency trend / 10m", min_width=22)
 
-    for label, reqs, p50_v, p75_v, p85_v, p95_v, p99_v, tout, rcol, spark in vm["scenario_rows"]:
+    _verdict_lines = []
+    for label, reqs, p50_v, p95_v, worst_v, tout, rcol, spark, vdict in vm["scenario_rows"]:
+        _tail_disp = _fmt_s(p95_v) if vdict["tail_reliable"] else f"({_fmt_s(p95_v)})"
         tbl.add_row(
             Text(label, style=rcol),
-            Text(str(reqs),  style=rcol),
+            Text(str(vdict["n"]), style=rcol),
             Text(_fmt_s(p50_v)),
-            Text(_fmt_s(p75_v)),
-            Text(_fmt_s(p85_v)),
-            Text(_fmt_s(p95_v), style=rcol),
-            Text(_fmt_s(p99_v)),
+            Text(_tail_disp, style=rcol),
+            Text(_fmt_s(worst_v), style="yellow" if worst_v > p50_v * 2 else "white"),
             Text(str(tout),  style="bold red" if tout > 0 else "white"),
             Text(spark, style="cyan"),
         )
+        _verdict_lines.append((label, vdict))
 
     tbl.add_row(
         Text("ALL USERS", style="bold white"),
-        Text(str(all_reqs), style="bold white"),
+        Text(str(vm["all_vdict"]["n"]), style="bold white"),
         Text(_fmt_s(all_p50),  style="bold white"),
-        Text(_fmt_s(all_p75),  style="bold white"),
-        Text(_fmt_s(all_p85),  style="bold white"),
-        Text(_fmt_s(all_p95),  style="bold red" if all_p95 > p95_tgt else "bold white"),
-        Text(_fmt_s(all_p99),  style="bold white"),
+        Text(_fmt_s(all_p95) if vm["all_vdict"]["tail_reliable"] else f"({_fmt_s(all_p95)})",
+             style="bold red" if all_p95 > p95_tgt else "bold white"),
+        Text(_fmt_s(vm["all_worst"]), style="bold white"),
         Text(str(all_tout), style="bold red" if all_tout > 0 else "bold white"),
         Text(vm["all_spark"], style="bold cyan"),
     )
     root.add_row(tbl)
     root.add_row(Text(
-        "  Trend column: each bar = p95 latency in a 30s window  ·  taller bar = slower responses  ·  ▁ low  █ high",
+        "  Typical = median (outlier-proof)  ·  Tail p95 in (parens) = too few samples to trust  ·  Worst = single slowest reply",
         style=f"color({_G_DIM})",
     ))
+    root.add_row(Text(
+        "  Trend bar = p95 latency per 10-minute window  ·  taller = slower  ·  ▁ low  █ high",
+        style=f"color({_G_DIM})",
+    ))
+    _vstyles = {"⚠": "yellow", "✓": "green", "•": f"color({_G_DIM})", " ": f"color({_G_DIM})"}
+    for _lbl, _vd in _verdict_lines + [("ALL USERS", vm["all_vdict"])]:
+        _short = _lbl.split(" · ")[0]
+        root.add_row(Text(f"  {_vd['icon']} {_short}: {_vd['verdict']}",
+                          style=_vstyles.get(_vd["icon"], "white")))
     root.add_row(Text(f"  {vm['err_spark']}  error rate  (bar height = errors in bucket)", style="red"))
     root.add_row(Text(""))
 
@@ -3492,7 +3592,7 @@ window as load increases. Use this to find the point where response times
 start climbing — that is your bot's capacity knee.
 
 ## Trend column (live dashboard)
-Each bar = p95 latency in a 30-second window. Taller bar = slower responses.
+Each bar = p95 latency in a 10-minute window. Taller bar = slower responses.
 ▁ = fast   █ = slow
 
 ## Tips

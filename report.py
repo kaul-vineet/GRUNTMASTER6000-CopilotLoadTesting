@@ -53,6 +53,7 @@ td{padding:9px 14px;border-top:1px solid #f1f5f9;vertical-align:top}
 tr:hover td{background:#f8fafc}
 .chart{background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.08);margin-bottom:4px;padding:4px}
 .pill{display:inline-block;background:#e2e8f0;color:#475569;font-size:11px;padding:2px 7px;border-radius:10px;margin:1px 2px 1px 0}
+td.read{font-size:12px;color:#475569;max-width:440px;white-space:normal;line-height:1.35}
 .notes-box{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;margin-bottom:20px;font-size:13px;color:#78350f;white-space:pre-wrap}
 .dl{text-align:center;margin:28px 0 12px}
 .dl a{display:inline-block;padding:9px 22px;background:#0f172a;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;font-size:13px}
@@ -154,6 +155,90 @@ def _fmt_s(ms) -> str:
 def _esc(x) -> str:
     """HTML-escape any value before it goes into report markup."""
     return _html.escape(str(x))
+
+
+# Reliability / shape thresholds — kept identical to run.py._latency_verdict so the
+# live dashboard and this report agree. Validated against an adversarial suite
+# (bimodal, time-trend, lone spike, low-n, degenerate inputs).
+_LV_MIN_N, _LV_TAIL_N = 5, 100
+_LV_TIGHT_TAIL, _LV_TIGHT_MAX, _LV_BROAD_TAIL, _LV_SPIKE_MAX, _LV_TREND_R = 1.30, 1.50, 1.50, 2.00, 1.30
+
+
+def _pctl(v: list, p: float) -> int:
+    """Nearest-rank (lower) percentile on a plain list — matches run.py._pct."""
+    if not v:
+        return 0
+    s = sorted(v)
+    return int(s[int(p * (len(s) - 1))])
+
+
+def _latency_verdict(times_ms: list, p95_target_ms: float = 0.0) -> dict:
+    """Plain-English read on one row's response times (ms), in send/time order.
+    Mirror of run.py._latency_verdict. Returns display fields + a one-line verdict."""
+    n = len(times_ms)
+    if n == 0:
+        return {"n": 0, "typ": 0, "p95": 0, "worst": 0, "tier": "none",
+                "trend": None, "slow_frac": 0.0, "tail_reliable": False,
+                "icon": "", "verdict": "no measured replies"}
+
+    med   = _pctl(times_ms, 0.50)
+    p95   = _pctl(times_ms, 0.95)
+    worst = max(times_ms)
+    d     = max(1, med)
+    tail_r, max_r = p95 / d, worst / d
+    slow_frac = sum(1 for x in times_ms if x > med * 1.5) / n
+
+    trend = None
+    if n >= 20:
+        h  = n // 2
+        m1 = _pctl(times_ms[:h], 0.50)
+        m2 = _pctl(times_ms[h:], 0.50)
+        if   m2 >= m1 * _LV_TREND_R: trend = "rising"
+        elif m1 >= m2 * _LV_TREND_R: trend = "falling"
+
+    if   tail_r <= _LV_TIGHT_TAIL and max_r <= _LV_TIGHT_MAX: tier = "tight"
+    elif tail_r >= _LV_BROAD_TAIL:                            tier = "broad"
+    elif max_r  >= _LV_SPIKE_MAX:                             tier = "spike"
+    else:                                                     tier = "skewed"
+
+    tail_reliable = n >= _LV_TAIL_N
+    low = not tail_reliable
+
+    if trend and tier in ("broad", "skewed"):
+        h    = n // 2
+        word = "slower over time (degrading)" if trend == "rising" else "faster over time (recovering)"
+        sc   = (f"latency is trending {word} — "
+                f"{_fmt_s(_pctl(times_ms[:h], 0.50))}s→{_fmt_s(_pctl(times_ms[h:], 0.50))}s.")
+        tier = "trend-up" if trend == "rising" else "trend-down"
+    elif tier == "tight":
+        sc = "latency is consistent."
+    elif tier == "spike":
+        sc = (f"worst {_fmt_s(worst)}s — possibly a fluke at this sample size."
+              if low else
+              f"worst {_fmt_s(worst)}s = a few isolated slow replies; Typical unaffected.")
+    elif tier == "broad":
+        sc = (f"early sign ~{slow_frac * 100:.0f}% of replies slower (up to {_fmt_s(worst)}s) — confirm with more data."
+              if low else
+              f"~{slow_frac * 100:.0f}% of replies much slower (up to {_fmt_s(worst)}s) — a real slow group, not a fluke.")
+    else:
+        sc = f"moderate spread (worst {_fmt_s(worst)}s)."
+
+    hc = ""
+    if p95_target_ms and tail_reliable and p95 > p95_target_ms:
+        hc = f" ⚠ p95 over target {_fmt_s(p95_target_ms)}s."
+
+    if n < _LV_MIN_N:
+        verdict, icon = f"only {n} sample{'' if n == 1 else 's'} — indicative only; Typical ~{_fmt_s(med)}s.", "⚠"
+    elif low:
+        verdict = f"{n} samples — trust Typical {_fmt_s(med)}s; " + sc + hc
+        icon    = "⚠" if (tier in ("broad", "trend-up") or hc) else "•"
+    else:
+        verdict = f"{n} samples — Tail p95 {_fmt_s(p95)}s reliable. " + sc + hc
+        icon    = "⚠" if (tier in ("broad", "trend-up") or hc) else "✓"
+
+    return {"n": n, "typ": med, "p95": p95, "worst": worst, "tier": tier,
+            "trend": trend, "slow_frac": slow_frac, "tail_reliable": tail_reliable,
+            "icon": icon, "verdict": verdict}
 
 
 def _pills(items) -> str:
@@ -402,14 +487,20 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     # ── Profile Summary ───────────────────────────────────────────────────────
     profile_rows_data = []
     for profile, grp in df.groupby("base_profile"):
-        ms       = grp[grp["timed_out"] == 0]["response_ms"]
+        g_ok     = grp[grp["timed_out"] == 0]
+        if "sent_dt" in g_ok.columns:
+            g_ok = g_ok.sort_values("sent_dt")
+        ms       = g_ok["response_ms"]
+        ms_list  = g_ok["response_ms"].tolist()
         tout     = int(grp["timed_out"].sum())
         reqs     = len(grp)
         p95v     = _pct(ms, 0.95)
+        _vd      = _latency_verdict(ms_list, p95_target)
         scenarios = sorted(grp["scenario"].unique().tolist())
         profile_rows_data.append(dict(
             profile=profile, scenarios=scenarios, requests=reqs,
             p50=_pct(ms, 0.50), p75=_pct(ms, 0.75), p85=_pct(ms, 0.85), p95=p95v, p99=_pct(ms, 0.99),
+            worst=max(ms_list) if ms_list else 0, read=_vd["verdict"], read_icon=_vd["icon"],
             timeouts=tout, error_pct=f"{tout/max(1,reqs)*100:.1f}%",
             ok=p95v <= p95_target,
         ))
@@ -417,14 +508,20 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     # ── Scenario Breakdown ────────────────────────────────────────────────────
     scenario_rows_data = []
     for scenario, grp in df.groupby("scenario"):
-        ms       = grp[grp["timed_out"] == 0]["response_ms"]
+        g_ok     = grp[grp["timed_out"] == 0]
+        if "sent_dt" in g_ok.columns:
+            g_ok = g_ok.sort_values("sent_dt")
+        ms       = g_ok["response_ms"]
+        ms_list  = g_ok["response_ms"].tolist()
         tout     = int(grp["timed_out"].sum())
         reqs     = len(grp)
         p95v     = _pct(ms, 0.95)
+        _vd      = _latency_verdict(ms_list, p95_target)
         profiles_for_scenario = sorted(grp["base_profile"].unique().tolist())
         scenario_rows_data.append(dict(
             scenario=scenario, profiles=profiles_for_scenario, requests=reqs,
             p50=_pct(ms, 0.50), p75=_pct(ms, 0.75), p85=_pct(ms, 0.85), p95=p95v, p99=_pct(ms, 0.99),
+            worst=max(ms_list) if ms_list else 0, read=_vd["verdict"], read_icon=_vd["icon"],
             timeouts=tout, error_pct=f"{tout/max(1,reqs)*100:.1f}%",
             ok=p95v <= p95_target,
         ))
@@ -607,8 +704,10 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
             f'<td>{_fmt_s(p["p85"])}</td>'
             f'<td{p95s}>{_fmt_s(p["p95"])}</td>'
             f'<td>{_fmt_s(p["p99"])}</td>'
+            f'<td>{_fmt_s(p["worst"])}</td>'
             f'<td>{p["timeouts"]}</td>'
             f'<td>{p["error_pct"]}</td>'
+            f'<td class="read">{_esc(p["read_icon"])} {_esc(p["read"])}</td>'
             f'</tr>'
         )
 
@@ -625,8 +724,10 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
             f'<td>{_fmt_s(s["p85"])}</td>'
             f'<td{p95s}>{_fmt_s(s["p95"])}</td>'
             f'<td>{_fmt_s(s["p99"])}</td>'
+            f'<td>{_fmt_s(s["worst"])}</td>'
             f'<td>{s["timeouts"]}</td>'
             f'<td>{s["error_pct"]}</td>'
+            f'<td class="read">{_esc(s["read_icon"])} {_esc(s["read"])}</td>'
             f'</tr>'
         )
 
@@ -761,7 +862,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     <table>
       <thead><tr>
         <th>Profile</th><th>Scenarios</th><th>Requests</th>
-        <th>p50 (s)</th><th>p75 (s)</th><th>p85 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>Timeouts</th><th>Error %</th>
+        <th>p50 (s)</th><th>p75 (s)</th><th>p85 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>Worst (s)</th><th>Timeouts</th><th>Error %</th><th>Read (which value to trust)</th>
       </tr></thead>
       <tbody>{profile_rows_html}</tbody>
     </table>
@@ -771,7 +872,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     <table>
       <thead><tr>
         <th>Scenario</th><th>Profiles</th><th>Requests</th>
-        <th>p50 (s)</th><th>p75 (s)</th><th>p85 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>Timeouts</th><th>Error %</th>
+        <th>p50 (s)</th><th>p75 (s)</th><th>p85 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>Worst (s)</th><th>Timeouts</th><th>Error %</th><th>Read (which value to trust)</th>
       </tr></thead>
       <tbody>{scenario_rows_html}</tbody>
     </table>

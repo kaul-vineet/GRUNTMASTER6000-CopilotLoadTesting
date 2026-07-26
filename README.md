@@ -630,11 +630,13 @@ The test runs entirely in the terminal. A live dashboard updates every half-seco
   RAMP TREND  Users ▁▂▄  Req ▁▂▄  RPS ▁▂▃  p50 ▁▃▄  p95 ▁▄▆  p99 ▁▄▇  T/O ▁▁▁
 
   PROFILE STATS
-   User · Scenario        Requests   p50   p95   p99   T/O   p95 / 30s buckets
-   ─────────────────────────────────────────────────────────────────────────────
-   Alice · It Support        22      1340  1820  2100    0   ▁▂▂▃▃▄▃▄▁▁▁▁▁▁▁▁▁▁▁▁
-   ALL USERS                 22      1340  1820  2100    0   ▁▂▂▃▃▄▃▄▁▁▁▁▁▁▁▁▁▁▁▁
-  Trend column: each bar = p95 latency in a 30s window · taller = slower · ▁ low  █ high
+   User · Scenario        n    Typical  Tail p95   Worst   T/O   Latency trend / 10m
+   ─────────────────────────────────────────────────────────────────────────────────
+   Alice · It Support     22    1.3s     (1.8s)     2.1s     0    ▁▂▂▃▃▄▃▄▁▁▁▁▁▁▁▁▁▁▁▁
+   ALL USERS              22    1.3s     (1.8s)     2.1s     0    ▁▂▂▃▃▄▃▄▁▁▁▁▁▁▁▁▁▁▁▁
+  Typical = median (outlier-proof) · Tail p95 in (parens) = too few samples to trust · Worst = single slowest reply
+  Trend bar = p95 latency per 10-minute window · taller = slower · ▁ low  █ high
+  ⚠ Alice: 22 samples — trust Typical 1.3s; worst 2.1s — possibly a fluke at this sample size.
   ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  error rate  (bar height = errors in bucket)
 
   UTTERANCES
@@ -712,8 +714,17 @@ Sort all response times again and go 95% of the way through the list. That value
 **p99 — the 99th percentile**
 The same idea pushed further: 99 out of 100 requests finished within this time. The p99 captures the very slow outliers. If your p99 is 5000 ms, one request in every hundred takes five seconds or more.
 
-**Why p95 matters more than average**
-The average can hide a lot. If 90 requests finish in 500 ms and 10 requests take 10 seconds, the average is about 1.4 seconds — sounds fine. But ten users out of every hundred had a terrible experience. The p95 surfaces that problem. This is why the dashboard focuses on percentiles rather than averages.
+**The live PROFILE STATS columns: Typical / Tail p95 / Worst**
+The live table deliberately shows only the numbers you can act on, and tells you which to trust:
+- **Typical** is the median (p50). It is *outlier-proof* — one freakishly slow reply cannot move it — so it always represents the experience most users actually get. When in doubt, this is the number to trust.
+- **Tail p95** is the 95th percentile (see below). It is shown **in parentheses** (e.g. `(1.8s)`) when the row has **fewer than 100 samples**, meaning there aren't yet enough data points for the tail to be statistically reliable — treat a parenthesised value as indicative only.
+- **Worst** is the single slowest reply (the max). Comparing it to Typical is the fastest way to spot an outlier: if `Worst` is far above `Typical` but `Typical` itself is low, one reply was slow and it did **not** distort the typical experience.
+
+**The verdict line (which value makes sense)**
+Below the table, each row gets one plain-English sentence that names the number to trust and classifies the shape of the data — for example *"trust Typical 1.3s; worst 2.1s = a few isolated slow replies; Typical unaffected"*, or *"~40% of replies much slower — a real slow group, not a fluke"*, or *"latency is trending slower over time (degrading)"*. It is computed from the sample count and percentile ratios, and it directly answers "is this number skewed by one value?".
+
+**p50 / p75 / p85 / p95 / p99 — the full percentile set**
+The complete percentile ladder is preserved in the **HTML report** and the **detail CSV** for drill-down. In the report, each profile/scenario row also gains a **Worst (s)** column and the same **Read (which value to trust)** verdict.
 
 **RPS — requests per second**
 How many messages are being sent to the bot per second right now across all simulated users. With a 30-second think time between messages, 30 concurrent users generate roughly 1 message per second.
@@ -724,11 +735,11 @@ A request where the bot did not reply within the Reply Timeout setting. The tool
 **Error rate**
 The percentage of requests that either timed out or returned an error. Keep this below 1%.
 
-**The p95 / 30s buckets sparkline (▁▂▄▇█▆▄▂)**
-Each tiny bar in the PROFILE STATS table represents one 30-second window of the test. The taller the bar, the slower the p95 was during that window. A sparkline that rises from left to right means the bot got slower as load increased. A flat sparkline means the bot handled load consistently.
+**The p95 / 10m buckets sparkline (▁▂▄▇█▆▄▂)**
+Each tiny bar in the PROFILE STATS table represents one 10-minute window of the test. The taller the bar, the slower the p95 was during that window. A sparkline that rises from left to right means the bot got slower as load increased. A flat sparkline means the bot handled load consistently.
 
 **Error rate sparkline**
-Shown as a single red line below PROFILE STATS. Each bar covers one 30-second window. A flat line at ▁ means zero errors throughout. Any bar taller than ▁ means errors occurred in that window.
+Shown as a single red line below PROFILE STATS. Each bar covers one 10-minute window. A flat line at ▁ means zero errors throughout. Any bar taller than ▁ means errors occurred in that window.
 
 **RAMP STEPS table**
 One row per 60-second window of the test. The current in-progress window is highlighted in cyan. The 429 column shows rate-limit responses per window. These rows let you pinpoint the load level where things started to slow down — for example, "response times were fine at 5 users but started climbing in the third minute when load hit 15 users."
