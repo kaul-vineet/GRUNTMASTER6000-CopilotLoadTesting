@@ -91,12 +91,6 @@ def _load_credential(key: str) -> str:
     return os.getenv(key, "")
 
 
-def _save_credential(key: str, value: str):
-    import keyring
-    keyring.set_password(_KR_SERVICE, key, value)
-    os.environ[key] = value
-
-
 # ── Shared config dict (read by Locust User classes) ─────────────────────────
 
 class _TestConfig(dict):
@@ -716,13 +710,6 @@ def _gchoose_multi(*items: str, header: str = "", height: int = 12) -> list:
     return [line for line in r.stdout.splitlines() if line.strip()] if r.returncode == 0 else []
 
 
-def _gfile(start_path: str = ".") -> str:
-    """Interactive file browser via `gum file`. Returns selected path or ''."""
-    r = subprocess.run(["gum", "file", start_path],
-                       text=True, stdout=subprocess.PIPE, encoding="utf-8")
-    return r.stdout.strip()
-
-
 def _gwrite(placeholder: str = "", *, header: str = "",
             width: int = 72, height: int = 8) -> str:
     """Multi-line text input via `gum write`. Ctrl-D to confirm, Esc to cancel."""
@@ -739,14 +726,6 @@ def _gwrite(placeholder: str = "", *, header: str = "",
         cmd += ["--header", f"\n  {header}\n"]
     r = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, encoding="utf-8")
     return r.stdout.strip()
-
-
-def _gformat(text: str):
-    """Render markdown text via `gum format`, falls back to plain print."""
-    r = subprocess.run(["gum", "format", "--", text],
-                       text=True, encoding="utf-8")
-    if r.returncode != 0:
-        print(text)
 
 
 def _gpager(text: str):
@@ -1433,17 +1412,6 @@ def run_startup_sequence(environment, profiles: list[dict]):
 
 
 # ── Setup wizard ──────────────────────────────────────────────────────────────
-
-def _is_configured() -> bool:
-    tenant = _load_credential("CS_TENANT_ID")
-    client = _load_credential("CS_CLIENT_ID")
-    has_dl = _load_credential("CS_DIRECTLINE_SECRET") or _load_credential("CS_TOKEN_ENDPOINT")
-    if not tenant or not client or not has_dl:
-        return False
-    if not _GUID_RE.match(tenant):
-        return False
-    return len(load_profiles()) > 0
-
 
 def _save_credentials(config: dict):
     global TENANT_ID, CLIENT_ID, DL_SECRET, AGENT_APP_ID, TOKEN_ENDPOINT, ENDPOINT_NEEDS_AUTH
