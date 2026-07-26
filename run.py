@@ -5,6 +5,10 @@ First run / reconfigure:
     python run.py           → setup wizard, then Locust web UI
     python run.py --setup   → force wizard even if .env is already configured
 
+Diagnostics:
+    python run.py --auth-probe            → resolve target agent + test SSO/token-exchange, print verdict
+    python run.py --auth-probe "question" → same, using a custom probe question
+
 Headless (pre-authenticate all profiles first):
     locust -f run.py --headless -u 10 -r 1
 """
@@ -3748,9 +3752,203 @@ def _screen1() -> None:
     run_wizard(_screen1_mode=True)
 
 
+def _jwt_claims(tok: str) -> dict:
+    """Best-effort decode of a JWT payload (no signature check) for diagnostics."""
+    import base64
+    try:
+        p = tok.split(".")[1]
+        p += "=" * (-len(p) % 4)
+        return json.loads(base64.urlsafe_b64decode(p))
+    except Exception as e:
+        return {"<decode error>": str(e)}
+
+
+def _auth_probe(question: str = "What is the Vehicle Identification Number (VIN) and where is it located?") -> bool:
+    """
+    Fast auth/agent diagnostic. Opens ONE fresh conversation, resolves the target
+    agent, sends one question, and — if the bot requests sign-in — performs the
+    signin/tokenExchange and prints its HTTP status + body. Prints a clear summary
+    so you can verify a Copilot Studio auth fix in ~10s without a full load run.
+    Returns True if the bot produced a real (non-fallback, signed-in) answer.
+    """
+    print("=" * 70)
+    print("  GRUNTMASTER 6000 — AUTH PROBE")
+    print("=" * 70)
+
+    try:
+        profiles = load_profiles()
+    except Exception as e:
+        print(f"  ✗ Could not load profiles: {e}")
+        return False
+    if not profiles:
+        print("  ✗ No profiles found. Run: python run.py --setup")
+        return False
+
+    username = profiles[0]["username"]
+    display  = profiles[0].get("display_name", username)
+    print(f"  Profile        : {display}")
+    print(f"  Auth required  : {_user_auth_required()}")
+    print(f"  CS_AGENT_APP_ID: {AGENT_APP_ID or '<none>'}")
+
+    # ── AAD token (SSO) ───────────────────────────────────────────────────
+    aad = None
+    if _user_auth_required():
+        try:
+            aad = get_valid_token(username)
+        except Exception as e:
+            print(f"  ✗ AAD token acquisition failed: {e}")
+            return False
+        claims = _jwt_claims(aad)
+        print(f"  AAD token      : {len(aad)} chars  aud={claims.get('aud')}  scp={claims.get('scp')}")
+
+    # ── DirectLine token → identify the target agent ──────────────────────
+    try:
+        dl = fetch_directline_token(aad)
+    except Exception as e:
+        print(f"  ✗ DirectLine token fetch failed: {e}")
+        return False
+    bot_id = _jwt_claims(dl).get("bot")
+    print(f"  Target agent id: {bot_id}   (DirectLine 'bot' claim)")
+
+    try:
+        conv = start_conversation(dl)
+        ws   = refresh_stream(conv)
+    except Exception as e:
+        print(f"  ✗ Conversation/WebSocket open failed: {e}")
+        return False
+    print(f"  Conversation   : {conv.id}")
+
+    try:
+        activity_id, _st, _sm = send_utterance(conv, question)
+    except Exception as e:
+        print(f"  ✗ Send utterance failed: {e}")
+        close_websocket(ws)
+        return False
+    print(f"  Question       : {question!r}")
+    print("-" * 70)
+
+    matched, last = [], None
+    start = time.monotonic()
+    bot_name        = None
+    oauth_cards     = 0
+    exchange_status = None
+    exchange_body   = None
+    exchange_conn   = None
+    while True:
+        now       = time.monotonic()
+        remaining = (_SILENCE_TIMEOUT - (now - last)) if matched else (60.0 - (now - start))
+        if remaining <= 0:
+            break
+        try:
+            ws.settimeout(remaining)
+            raw = ws.recv()
+        except Exception:
+            break
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except Exception:
+            continue
+        for a in data.get("activities", []):
+            atype = a.get("type")
+            frm   = a.get("from", {})
+            if frm.get("role") == "bot" and frm.get("name") and bot_name is None:
+                bot_name = frm.get("name")
+
+            # signin/tokenExchange invoke from the bot
+            if (atype == "invoke" and a.get("name") == "signin/tokenExchange"
+                    and aad and exchange_status is None):
+                v = a.get("value", {})
+                exchange_conn = v.get("connectionName")
+                exchange_status, exchange_body = _probe_exchange(conv, v.get("id", ""), v.get("connectionName", ""), aad)
+                continue
+
+            # OAuthCard message → respond with token exchange
+            if atype == "message" and aad:
+                is_card = False
+                for att in a.get("attachments", []):
+                    if att.get("contentType") == "application/vnd.microsoft.card.oauth":
+                        is_card = True
+                        oauth_cards += 1
+                        content = att.get("content", {})
+                        tr      = content.get("tokenExchangeResource", {})
+                        exchange_conn = content.get("connectionName")
+                        if tr and exchange_status is None:
+                            exchange_status, exchange_body = _probe_exchange(
+                                conv, tr.get("id", ""), content.get("connectionName", ""), aad)
+                        break
+                if is_card:
+                    continue
+
+            if (atype == "message" and frm.get("role") == "bot"
+                    and a.get("replyToId") == activity_id):
+                matched.append(a)
+                last = time.monotonic()
+
+    close_websocket(ws)
+
+    text    = " ".join(m.get("text", "").strip() for m in matched if m.get("text", "").strip())
+    low     = text.lower()
+    signin  = ("sign in" in low or "don't have access" in low or "do not have access" in low)
+    fallbk  = ("i'm sorry" in low or "not sure how to help" in low)
+    latency = (last - start) if last else -1
+
+    print(f"  Agent name     : {bot_name!r}")
+    print(f"  OAuth cards     : {oauth_cards}")
+    if exchange_status is not None:
+        print(f"  Token exchange  : connection={exchange_conn!r}")
+        print(f"                    HTTP {exchange_status}")
+        if exchange_status != 200:
+            print(f"                    body: {(exchange_body or '')[:400]!r}")
+    else:
+        print(f"  Token exchange  : (none requested by bot)")
+    print(f"  Latency         : {latency:.1f}s" if latency >= 0 else "  Latency         : n/a")
+    print(f"  Answer text     : {text[:300]!r}")
+    print("-" * 70)
+
+    if not text:
+        verdict, ok = "NO REPLY (timeout)", False
+    elif signin:
+        verdict, ok = "BLOCKED — sign-in / no access (token exchange did not complete)", False
+    elif fallbk:
+        verdict, ok = "FALLBACK — bot answered but could not ground the answer", False
+    else:
+        verdict, ok = "OK — real, signed-in answer", True
+    print(f"  VERDICT: {verdict}")
+    print("=" * 70)
+    return ok
+
+
+def _probe_exchange(conversation: "Conversation", invoke_id: str, connection_name: str, aad_token: str):
+    """POST a signin/tokenExchange invoke and return (status_code, body) for diagnostics."""
+    try:
+        r = _session.post(
+            f"{DIRECTLINE_BASE}/v3/directline/conversations/{conversation.id}/activities",
+            headers={"Authorization": f"Bearer {conversation.token}", "Content-Type": "application/json"},
+            json={
+                "type": "invoke", "name": "signin/tokenExchange",
+                "value": {"id": invoke_id, "connectionName": connection_name, "token": aad_token},
+                "from": {"id": "load-test-user"},
+            },
+            timeout=15,
+        )
+        return r.status_code, r.text
+    except Exception as e:
+        return -1, f"{type(e).__name__}: {e}"
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
+    if "--auth-probe" in sys.argv:
+        _q = None
+        for i, a in enumerate(sys.argv):
+            if a == "--auth-probe" and i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith("-"):
+                _q = sys.argv[i + 1]
+        ok = _auth_probe(_q) if _q else _auth_probe()
+        sys.exit(0 if ok else 1)
+
     # First run — no credentials at all → jump straight into wizard
     if not any([_load_credential("CS_TENANT_ID"), _load_credential("CS_CLIENT_ID"),
                 _load_credential("CS_DIRECTLINE_SECRET"), _load_credential("CS_TOKEN_ENDPOINT")]):
