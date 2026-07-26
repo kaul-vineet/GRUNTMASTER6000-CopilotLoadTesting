@@ -3331,22 +3331,19 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
         def _utt_rows(ut: Table, rows: list, col: str):
             for utt, profile_k, times, tout_u, bot_resp in rows[:4]:
                 p95_u  = _pct(times, 0.95)
-                plabel = (profile_k[:20] + "…") if len(profile_k) > 21 else profile_k
-                ulabel = (utt[:28] + "…") if len(utt) > 29 else utt
                 _resp  = " ".join(bot_resp.split())
-                rlabel = (_resp[:38] + "…") if len(_resp) > 39 else _resp
-                ut.add_row(Text(plabel, style="cyan"),
-                           Text(ulabel, style=col),
+                ut.add_row(Text(profile_k, style="cyan", no_wrap=True, overflow="ellipsis"),
+                           Text(utt, style=col, no_wrap=True, overflow="ellipsis"),
                            Text(_fmt_s(p95_u), style=col),
-                           Text(rlabel, style="dim"))
+                           Text(_resp, style="dim", no_wrap=True, overflow="ellipsis"))
 
         root.add_row(Text("  UTTERANCES", style="bold cyan"))
         ut = Table(show_header=True, header_style="bold cyan",
                    box=rich_box.SIMPLE_HEAD, padding=(0, 2), expand=True)
-        ut.add_column("Profile",       min_width=22)
-        ut.add_column("Utterance",     min_width=30)
-        ut.add_column("Response (s)",  justify="right", min_width=12)
-        ut.add_column("Bot Response",  min_width=40)
+        ut.add_column("Profile",       width=22, no_wrap=True, overflow="ellipsis")
+        ut.add_column("Utterance",     ratio=1, no_wrap=True, overflow="ellipsis")
+        ut.add_column("Response (s)",  justify="right", width=12)
+        ut.add_column("Bot Response",  ratio=1, no_wrap=True, overflow="ellipsis")
         ut.add_row(Text("── slowest ──", style="dim"),
                    Text(""), Text(""), Text(""))
         _utt_rows(ut, slowest, "bold red")
