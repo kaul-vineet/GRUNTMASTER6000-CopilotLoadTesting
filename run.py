@@ -2842,6 +2842,40 @@ def _fmt_s(ms) -> str:
         return str(ms)
 
 
+_SKEW_TAG_T = 0.15   # |Bowley skew| above this = a distribution that clearly leans
+
+
+def _bowley_skew(values: list):
+    """Robust quartile (Bowley) skew in [-1, 1], computed from percentiles only so
+    it agrees with the rest of the dashboard and shrugs off lone outliers.
+
+    Positive  => right-skewed: most replies are fast, a slow tail stretches upward.
+    Negative  => left-skewed:  most replies cluster near the slow end.
+    Returns None when there are too few samples or the inter-quartile range is
+    degenerate (all quartiles equal), i.e. when a shape verdict isn't meaningful."""
+    if len(values) < _LV_MIN_N:
+        return None
+    q1 = _pct(values, 0.25)
+    q2 = _pct(values, 0.50)
+    q3 = _pct(values, 0.75)
+    denom = q3 - q1
+    if denom <= 0:
+        return None
+    return ((q3 - q2) - (q2 - q1)) / denom
+
+
+def _shape_tag(values: list) -> tuple:
+    """Plain-English distribution shape from Bowley skew → (label, rich_style)."""
+    sk = _bowley_skew(values)
+    if sk is None:
+        return ("—", f"color({_G_DIM})")
+    if sk >= _SKEW_TAG_T:
+        return ("Mostly fast", "green")
+    if sk <= -_SKEW_TAG_T:
+        return ("Mostly slow", "yellow")
+    return ("Balanced", f"color({_G_DIM})")
+
+
 # Reliability / shape thresholds for _latency_verdict. Validated against an
 # adversarial suite (bimodal, time-trend, lone spike, low-n, degenerate inputs).
 _LV_MIN_N      = 5      # below this, even the median is only indicative
@@ -3009,6 +3043,7 @@ def _compute_dashboard_vm(snap: dict, runner, params: dict, state: "_DashboardSt
     all_p99   = _pct(all_times, 0.99)
     all_worst = max(all_times) if all_times else 0
     all_vdict = _latency_verdict(all_times, p95_tgt)
+    all_shape = _shape_tag(all_times)
 
     err_rate = (all_tout / max(1, all_reqs)) * 100
     recent   = [t for t, _ in snap["ts"] if t > elapsed - 30]
@@ -3068,11 +3103,12 @@ def _compute_dashboard_vm(snap: dict, runner, params: dict, state: "_DashboardSt
         p95_v = _pct(times, 0.95)
         worst_v = max(times) if times else 0
         vdict = _latency_verdict(times, p95_tgt)
+        shape = _shape_tag(times)
         rcol  = "bold red" if p95_v > p95_tgt else "white"
         disp  = state.profile_map.get(scenario, "")
         label = f"{disp} · {scenario}" if disp else scenario
         spark = _sparkline(snap["scenario_ts"].get(scenario, []))
-        scenario_rows.append((label, reqs, p50_v, p85_v, p95_v, worst_v, tout, rcol, spark, vdict))
+        scenario_rows.append((label, reqs, p50_v, p85_v, p95_v, worst_v, shape, tout, rcol, spark, vdict))
 
     all_spark = _sparkline(snap["ts"])
     err_spark = _error_sparkline(snap["errs"])
@@ -3112,6 +3148,7 @@ def _compute_dashboard_vm(snap: dict, runner, params: dict, state: "_DashboardSt
         "target": target, "curr": curr, "p95_tgt": p95_tgt,
         "all_p50": all_p50, "all_p75": all_p75, "all_p85": all_p85, "all_p95": all_p95, "all_p99": all_p99,
         "all_worst": all_worst, "all_vdict": all_vdict,
+        "all_shape": all_shape,
         "all_reqs": all_reqs, "all_tout": all_tout,
         "err_rate": err_rate, "rps": rps,
         "health": health, "hcol": hcol,
@@ -3267,11 +3304,12 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
     tbl.add_column("p85",      justify="right", min_width=7)
     tbl.add_column("Tail p95", justify="right", min_width=9)
     tbl.add_column("Worst",    justify="right", min_width=8)
+    tbl.add_column("Shape",    justify="left",  min_width=11)
     tbl.add_column("T/O",      justify="right", min_width=5)
     tbl.add_column("Latency trend / 10m", min_width=22)
 
     _verdict_lines = []
-    for label, reqs, p50_v, p85_v, p95_v, worst_v, tout, rcol, spark, vdict in vm["scenario_rows"]:
+    for label, reqs, p50_v, p85_v, p95_v, worst_v, shape, tout, rcol, spark, vdict in vm["scenario_rows"]:
         _tail_disp = _fmt_s(p95_v) if vdict["tail_reliable"] else f"({_fmt_s(p95_v)})"
         tbl.add_row(
             Text(label, style=rcol),
@@ -3280,6 +3318,7 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
             Text(_fmt_s(p85_v)),
             Text(_tail_disp, style=rcol),
             Text(_fmt_s(worst_v), style="yellow" if worst_v > p50_v * 2 else "white"),
+            Text(shape[0], style=shape[1]),
             Text(str(tout),  style="bold red" if tout > 0 else "white"),
             Text(spark, style="cyan"),
         )
@@ -3293,12 +3332,17 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
         Text(_fmt_s(all_p95) if vm["all_vdict"]["tail_reliable"] else f"({_fmt_s(all_p95)})",
              style="bold red" if all_p95 > p95_tgt else "bold white"),
         Text(_fmt_s(vm["all_worst"]), style="bold white"),
+        Text(vm["all_shape"][0], style=f"bold {vm['all_shape'][1]}"),
         Text(str(all_tout), style="bold red" if all_tout > 0 else "bold white"),
         Text(vm["all_spark"], style="bold cyan"),
     )
     root.add_row(tbl)
     root.add_row(Text(
         "  Typical = median (outlier-proof)  ·  p85 = 85% of replies were faster  ·  Tail p95 in (parens) = too few samples to trust  ·  Worst = single slowest reply",
+        style=f"color({_G_DIM})",
+    ))
+    root.add_row(Text(
+        "  Shape = where replies bunch: Mostly fast = quick with a slow tail  ·  Balanced = evenly spread  ·  Mostly slow = bulk near the slow end",
         style=f"color({_G_DIM})",
     ))
     root.add_row(Text(
