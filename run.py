@@ -3064,6 +3064,7 @@ def _compute_dashboard_vm(snap: dict, runner, params: dict, state: "_DashboardSt
         tout  = snap["tout"].get(scenario, 0)
         reqs  = len(times) + tout
         p50_v = _pct(times, 0.50)
+        p85_v = _pct(times, 0.85)
         p95_v = _pct(times, 0.95)
         worst_v = max(times) if times else 0
         vdict = _latency_verdict(times, p95_tgt)
@@ -3071,7 +3072,7 @@ def _compute_dashboard_vm(snap: dict, runner, params: dict, state: "_DashboardSt
         disp  = state.profile_map.get(scenario, "")
         label = f"{disp} · {scenario}" if disp else scenario
         spark = _sparkline(snap["scenario_ts"].get(scenario, []))
-        scenario_rows.append((label, reqs, p50_v, p95_v, worst_v, tout, rcol, spark, vdict))
+        scenario_rows.append((label, reqs, p50_v, p85_v, p95_v, worst_v, tout, rcol, spark, vdict))
 
     all_spark = _sparkline(snap["ts"])
     err_spark = _error_sparkline(snap["errs"])
@@ -3263,18 +3264,20 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
     tbl.add_column("User · Scenario", min_width=32)
     tbl.add_column("n",        justify="right", min_width=6)
     tbl.add_column("Typical",  justify="right", min_width=8)
+    tbl.add_column("p85",      justify="right", min_width=7)
     tbl.add_column("Tail p95", justify="right", min_width=9)
     tbl.add_column("Worst",    justify="right", min_width=8)
     tbl.add_column("T/O",      justify="right", min_width=5)
     tbl.add_column("Latency trend / 10m", min_width=22)
 
     _verdict_lines = []
-    for label, reqs, p50_v, p95_v, worst_v, tout, rcol, spark, vdict in vm["scenario_rows"]:
+    for label, reqs, p50_v, p85_v, p95_v, worst_v, tout, rcol, spark, vdict in vm["scenario_rows"]:
         _tail_disp = _fmt_s(p95_v) if vdict["tail_reliable"] else f"({_fmt_s(p95_v)})"
         tbl.add_row(
             Text(label, style=rcol),
             Text(str(vdict["n"]), style=rcol),
             Text(_fmt_s(p50_v)),
+            Text(_fmt_s(p85_v)),
             Text(_tail_disp, style=rcol),
             Text(_fmt_s(worst_v), style="yellow" if worst_v > p50_v * 2 else "white"),
             Text(str(tout),  style="bold red" if tout > 0 else "white"),
@@ -3286,6 +3289,7 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
         Text("ALL USERS", style="bold white"),
         Text(str(vm["all_vdict"]["n"]), style="bold white"),
         Text(_fmt_s(all_p50),  style="bold white"),
+        Text(_fmt_s(all_p85),  style="bold white"),
         Text(_fmt_s(all_p95) if vm["all_vdict"]["tail_reliable"] else f"({_fmt_s(all_p95)})",
              style="bold red" if all_p95 > p95_tgt else "bold white"),
         Text(_fmt_s(vm["all_worst"]), style="bold white"),
@@ -3294,7 +3298,7 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
     )
     root.add_row(tbl)
     root.add_row(Text(
-        "  Typical = median (outlier-proof)  ·  Tail p95 in (parens) = too few samples to trust  ·  Worst = single slowest reply",
+        "  Typical = median (outlier-proof)  ·  p85 = 85% of replies were faster  ·  Tail p95 in (parens) = too few samples to trust  ·  Worst = single slowest reply",
         style=f"color({_G_DIM})",
     ))
     root.add_row(Text(
