@@ -2508,7 +2508,7 @@ class CopilotBaseUser(User):
             a.get("text", "").strip()
             for a in response.activities
             if a.get("text", "").strip()
-        )[:500]
+        )
         _log_utterance(self._spawn_num, profile_label, self._idx, self.scenario_name,
                        self.conversation.id, utterance, bot_text,
                        send_time, response.latency_ms, timed_out=False,
