@@ -2879,6 +2879,8 @@ _LV_TIGHT_MAX  = 1.50   # worst/median ≤ this → no meaningful spike
 _LV_BROAD_TAIL = 1.50   # p95/median ≥ this  → a real slow population (or 2nd mode)
 _LV_SPIKE_MAX  = 2.00   # worst/median ≥ this (with a tight tail) → a lone outlier
 _LV_TREND_R    = 1.30   # 2nd-half median vs 1st-half median ratio → a time trend
+_LV_TREND_FRAC = 0.25   # min shift in fraction-above-overall-median to confirm a
+                        # real monotonic trend (rejects bimodal sampling noise)
 
 
 def _latency_verdict(times_ms: list, p95_target_ms: float = 0.0) -> dict:
@@ -2904,14 +2906,21 @@ def _latency_verdict(times_ms: list, p95_target_ms: float = 0.0) -> dict:
     max_r     = worst / d
     slow_frac = sum(1 for v in times_ms if v > med * 1.5) / n
 
-    # Time trend: compare first-half vs second-half median (needs enough points).
+    # Time trend: a shift in the median between the first and second half.
+    # A near-50/50 bimodal mix makes the half-median jump between modes on tiny
+    # sampling noise, so also require the fraction of samples above the OVERALL
+    # median to move meaningfully — a real monotonic trend shifts it, a shuffled
+    # 2-mode split does not.
     trend = None
     if n >= 20:
         h  = n // 2
         m1 = _pct(times_ms[:h], 0.50)
         m2 = _pct(times_ms[h:], 0.50)
-        if   m2 >= m1 * _LV_TREND_R: trend = "rising"
-        elif m1 >= m2 * _LV_TREND_R: trend = "falling"
+        if m2 >= m1 * _LV_TREND_R or m1 >= m2 * _LV_TREND_R:
+            f1 = sum(1 for v in times_ms[:h] if v > med) / h
+            f2 = sum(1 for v in times_ms[h:] if v > med) / (n - h)
+            if abs(f2 - f1) >= _LV_TREND_FRAC:
+                trend = "rising" if m2 >= m1 else "falling"
 
     if   tail_r <= _LV_TIGHT_TAIL and max_r <= _LV_TIGHT_MAX: tier = "tight"
     elif tail_r >= _LV_BROAD_TAIL:                            tier = "broad"

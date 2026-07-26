@@ -162,6 +162,7 @@ def _esc(x) -> str:
 # (bimodal, time-trend, lone spike, low-n, degenerate inputs).
 _LV_MIN_N, _LV_TAIL_N = 5, 100
 _LV_TIGHT_TAIL, _LV_TIGHT_MAX, _LV_BROAD_TAIL, _LV_SPIKE_MAX, _LV_TREND_R = 1.30, 1.50, 1.50, 2.00, 1.30
+_LV_TREND_FRAC = 0.25
 
 
 def _pctl(v: list, p: float) -> int:
@@ -193,8 +194,11 @@ def _latency_verdict(times_ms: list, p95_target_ms: float = 0.0) -> dict:
         h  = n // 2
         m1 = _pctl(times_ms[:h], 0.50)
         m2 = _pctl(times_ms[h:], 0.50)
-        if   m2 >= m1 * _LV_TREND_R: trend = "rising"
-        elif m1 >= m2 * _LV_TREND_R: trend = "falling"
+        if m2 >= m1 * _LV_TREND_R or m1 >= m2 * _LV_TREND_R:
+            f1 = sum(1 for v in times_ms[:h] if v > med) / h
+            f2 = sum(1 for v in times_ms[h:] if v > med) / (n - h)
+            if abs(f2 - f1) >= _LV_TREND_FRAC:
+                trend = "rising" if m2 >= m1 else "falling"
 
     if   tail_r <= _LV_TIGHT_TAIL and max_r <= _LV_TIGHT_MAX: tier = "tight"
     elif tail_r >= _LV_BROAD_TAIL:                            tier = "broad"
