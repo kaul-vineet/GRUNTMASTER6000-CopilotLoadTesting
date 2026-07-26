@@ -1,19 +1,19 @@
-# GRUNTMASTER 6000
+# 💪 GRUNTMASTER 6000
 
-Load-testing tool for **Microsoft Copilot Studio** agents. It drives many simulated
+⚡ Load-testing tool for **Microsoft Copilot Studio** agents. It drives many simulated
 users through real conversations over the **Direct Line** channel, signs each one in
 with a real Microsoft 365 account, and measures how fast the agent replies under load.
 
-- Concurrent, authenticated users — no browser windows required.
-- Automated device-code sign-in per account (tokens cached ~90 days).
-- Live terminal dashboard + auto-generated HTML report and detail CSV.
+- 👥 Concurrent, authenticated users — no browser windows required.
+- 🔐 Automated device-code sign-in per account (tokens cached ~90 days).
+- 📊 Live terminal dashboard + auto-generated HTML report and detail CSV.
 
-> Requires an agent with **Entra ID sign-in** and the **Direct Line** channel enabled.
+> ⚠️ Requires an agent with **Entra ID sign-in** and the **Direct Line** channel enabled.
 > Public (no-auth) agents are not supported.
 
 ---
 
-## Quick start (Docker — recommended)
+## 🚀 Quick start (Docker — recommended)
 
 Docker avoids native build issues on Windows-on-ARM/macOS/Linux and installs `gum` for you.
 
@@ -33,7 +33,7 @@ tokens under `profiles/.tokens/`. `profiles/`, `utterances/` and `report/` are m
 your host. Set `TOKEN_ENCRYPTION_PASSWORD` (16+ chars) in `.env` as a token-encryption fallback.
 
 <details>
-<summary><b>Local install (Windows, no Docker)</b></summary>
+<summary>💻 <b>Local install (Windows, no Docker)</b></summary>
 
 ```powershell
 python -m venv .venv
@@ -50,12 +50,12 @@ Requires Python 3.10+ and Windows Credential Manager for secure storage.
 
 ---
 
-## Setup
+## 🛠️ Setup
 
 You connect **two** Entra app registrations: the **load-test client** you create, and the
 agent's **resource app** (created by Copilot Studio when you enable auth).
 
-### 1. Azure — load-test client app
+### 1️⃣ Azure — load-test client app
 
 1. **Entra ID → App registrations → New registration.** Single tenant, no redirect URI.
    Copy its **Client ID** (`CLIENT_ID`) and **Tenant ID** (`TENANT_ID`).
@@ -68,7 +68,7 @@ Find the agent's resource app under **App registrations → All applications** (
 Client ID. Confirm it exposes `.../access_as_user` under **Expose an API**. Save its Client ID
 as `AGENT_APP_ID`. The tool requests `api://<AGENT_APP_ID>/access_as_user`.
 
-### 2. Copilot Studio
+### 2️⃣ Copilot Studio
 
 1. **Settings → Channels → Direct Line →** enable, copy a **Secret key** (`DIRECTLINE_SECRET`).
    Keep it private. (Or use a **Token Endpoint URL** instead.)
@@ -79,12 +79,12 @@ as `AGENT_APP_ID`. The tool requests `api://<AGENT_APP_ID>/access_as_user`.
    - **Scopes:** `openid profile` — add `Sites.Read.All Files.Read.All` if the agent uses a
      **SharePoint/OneDrive** knowledge source (see below).
 
-**SharePoint/OneDrive agents:** the agent searches Graph *as the signed-in user*, so the
+**📎 SharePoint/OneDrive agents:** the agent searches Graph *as the signed-in user*, so the
 resource app needs Graph **delegated** `Sites.Read.All` + `Files.Read.All` (with admin consent),
 plus those scopes in the auth connection, then **Publish**. Symptom if missing: every Direct Line
 answer is a generic fallback, yet the same question works in the Copilot Studio Test pane.
 
-### 3. Wizard (`--setup`)
+### 3️⃣ Wizard (`--setup`)
 
 The wizard stores everything in the secure credential store and signs in each profile via
 device code (open the printed URL, enter the code). Fields:
@@ -103,7 +103,7 @@ device code (open the printed URL, enter the code). Fields:
 > agent. Switching agents only requires the new secret *if* the new agent shares the same
 > `AGENT_APP_ID`/scope/SSO connection.
 
-### 4. Utterance scripts
+### 4️⃣ Utterance scripts
 
 Drop CSV files in `utterances/`. Each file is one scenario; each row after the `utterance`
 header is one message, sent in order. Assign a scenario to each profile in the wizard.
@@ -117,7 +117,7 @@ What are the steps to reset a password?
 
 ---
 
-## Running
+## ▶️ Running
 
 ```bash
 docker compose run --rm gruntmaster     # or: run-gruntmaster  /  python run.py
@@ -136,10 +136,10 @@ Configuration** menu appears. Key settings:
 | **Warm-up cap** | Max priming turns to burn off cold-start fallbacks (see below). |
 | **Notes** | Free text embedded in the HTML report. |
 
-> **SharePoint/OneDrive agents are slow** (first authenticated reply ~55–90s). Set **Reply
+> 🐢 **SharePoint/OneDrive agents are slow** (first authenticated reply ~55–90s). Set **Reply
 > timeout ≥ 120s**, or `GRUNTMASTER_RESPONSE_TIMEOUT=120` for headless runs.
 
-**Cold-start warm-up:** Copilot Studio fast-fallbacks the first 1–2 turns of a fresh
+**🔥 Cold-start warm-up:** Copilot Studio fast-fallbacks the first 1–2 turns of a fresh
 conversation while greeting/SSO/knowledge orchestration spin up. Before measuring, each user
 replays its own utterances (discarded, **not** counted) until it gets a real (non-fallback)
 reply, capped by *Warm-up cap*. Tune with `GRUNTMASTER_WARMUP_TURNS` and, if your agent's
@@ -150,7 +150,7 @@ agent's Power Platform message capacity is usually the real ceiling.
 
 ---
 
-## Reading results
+## 📈 Reading results
 
 **Live dashboard** (updates every ~0.5s): health indicator, ramp-step table, per-profile
 **PROFILE STATS**, an extremes **UTTERANCES** table, and an **EVENTS** feed.
@@ -171,15 +171,15 @@ trending slower.
 - `events_*.csv` — ramp/error/rate-limit log. `ci_*.json` — pass/fail summary
   (`GRUNTMASTER_CI=1` prints it and sets the exit code).
 
-**Pass criteria:** p95 under your target (default 2000 ms) and error rate under 1%.
+**✅ Pass criteria:** p95 under your target (default 2000 ms) and error rate under 1%.
 
-**Resilience:** two consecutive timeouts restart that user's conversation; a 429 pauses all
+**🛡️ Resilience:** two consecutive timeouts restart that user's conversation; a 429 pauses all
 users 60s (circuit breaker) then resumes; connection/send retries with backoff; a shared,
 auto-sized HTTPS connection pool.
 
 ---
 
-## Troubleshooting
+## 🩺 Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
@@ -194,7 +194,7 @@ auto-sized HTTPS connection pool.
 
 ---
 
-## Environment variables
+## ⚙️ Environment variables
 
 | Variable | Purpose |
 |---|---|
@@ -207,7 +207,7 @@ auto-sized HTTPS connection pool.
 
 ---
 
-## File reference
+## 📁 File reference
 
 | Path | Purpose |
 |---|---|
