@@ -3207,32 +3207,38 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
     )
     root.add_row(Panel(hdr, border_style="cyan", padding=(0, 1)))
 
-    # ── Agent under test (own line) ───────────────────────────────────────────
+    # ── Agent / status / config — 2×2 grid to save vertical space ─────────────
+    # Left column:  Agent line   +   phase label + spawn bar
+    # Right column: Mode / Ramp  +   RPS / Errors / p95
     if _run_state.agent_name or _run_state.agent_id:
-        _ag = _run_state.agent_name or "—"
+        _ag  = _run_state.agent_name or "—"
         _aid = f"  ·  id {_run_state.agent_id}" if _run_state.agent_id else ""
-        root.add_row(Text(f"  Agent: {_ag}{_aid}", style="bold cyan"))
+        _ag_txt = Text(f"  Agent: {_ag}{_aid}", style="bold cyan")
+    else:
+        _ag_txt = Text("", style="bold cyan")
 
-    # ── Spawning bar (own line) ───────────────────────────────────────────────
-    root.add_row(Text(
-        f"  {vm['phase_label']}  {spawn_bar}",
-        style=vm["phase_style"],
-    ))
-    # ── Config FYI ───────────────────────────────────────────────────────────
-    # (User count is already in the header as "curr / target active" — not repeated here.)
-    root.add_row(Text(
+    _phase_txt = Text(f"  {vm['phase_label']}  {spawn_bar}", style=vm["phase_style"])
+
+    _mode_txt = Text(
         f"  Mode: {params.get('mode', 'Concurrent')}   "
         f"Ramp: {params.get('spawn_rate', 0)}/min"
         + (f"   Run time: {params.get('run_time', 0) // 60} min"
            if params.get('mode', 'Concurrent') == 'Concurrent' else ""),
         style=f"color({_G_DIM})",
-    ))
-    # ── Stats summary (own line) ──────────────────────────────────────────────
-    root.add_row(Text(
+    )
+
+    _stats_txt = Text(
         f"  RPS: {rps:.1f}/s   Errors: {err_rate:.1f}%   "
         f"p95: [{p95_bar}] {_fmt_s(all_p95)}s / {_fmt_s(p95_tgt)}s{p95_warn}",
         style="bold white",
-    ))
+    )
+
+    _meta = Table.grid(expand=True, padding=(0, 0))
+    _meta.add_column(ratio=1)
+    _meta.add_column(ratio=1)
+    _meta.add_row(_ag_txt,    _mode_txt)
+    _meta.add_row(_phase_txt, _stats_txt)
+    root.add_row(_meta)
     if vm["cpu_warn_active"]:
         root.add_row(Text(
             "  ⚠ CPU >90%  —  Locust may give inaccurate latency readings; "
