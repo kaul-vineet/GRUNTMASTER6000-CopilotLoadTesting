@@ -284,7 +284,8 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
                     response_timeout: float = 30.0,
                     silence_timeout: float = 15.0,
                     run_config: "dict | None" = None,
-                    baseline_csv: "Path | None" = None) -> Path:
+                    baseline_csv: "Path | None" = None,
+                    agent_name: str = "", agent_id: str = "") -> Path:
     _require_deps()
     import pandas as pd
     import plotly.graph_objects as go
@@ -800,6 +801,9 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
     _cfg_data = {}
     if run_config:
         _cfg_data.update(run_config)
+    if agent_name or agent_id:
+        _cfg_data["agent"]    = agent_name or "—"
+        _cfg_data["agent_id"] = agent_id or "—"
     _cfg_data["p95_target_ms"]       = p95_target
     _cfg_data["response_timeout_s"]  = response_timeout
     _cfg_data["silence_timeout_s"]   = silence_timeout
@@ -836,6 +840,7 @@ def generate_report(csv_path: Path, p95_target: int = P95_TARGET_MS,
   <!-- Header stats bar -->
   <div class="hdr">
     <h1>GRUNTMASTER 6000 &nbsp;&middot;&nbsp; LOAD TEST REPORT</h1>
+    {f'<div class="stat"><div class="v" title="{_esc(agent_id)}">{_esc(agent_name or "—")}</div><div class="l">Agent</div></div>' if (agent_name or agent_id) else ""}
     <div class="stat"><div class="v">{test_date_str}</div><div class="l">Test date</div></div>
     <div class="stat"><div class="v">{total_reqs:,}</div><div class="l">Requests</div></div>
     <div class="stat"><div class="v">{duration_str}</div><div class="l">Duration</div></div>

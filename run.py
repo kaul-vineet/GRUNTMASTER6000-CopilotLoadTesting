@@ -141,7 +141,7 @@ def _init_session(user_count: int):
 
 class _RunState:
     __slots__ = ("dashboard", "circuit_open_until", "cpu_warn_ts", "spawning_complete", "phase", "mode",
-                 "pipeline_spawns_total", "pipeline_done")
+                 "pipeline_spawns_total", "pipeline_done", "agent_name", "agent_id")
     def __init__(self) -> None:
         self.dashboard: "Optional[_DashboardState]" = None
         self.circuit_open_until: float = 0.0
@@ -151,6 +151,8 @@ class _RunState:
         self.mode: str = "Concurrent"  # "Concurrent" | "Pipeline"
         self.pipeline_spawns_total: int = 0
         self.pipeline_done: int = 0
+        self.agent_name: str = ""      # bot display name (from reply from.name), set at pre-flight
+        self.agent_id: str = ""        # DirectLine 'bot' claim (agent app id), set at pre-flight
 
 _run_state = _RunState()
 _spawn_counters: dict[str, int] = {}   # class_name → spawn sequence number
@@ -1243,6 +1245,7 @@ def _preflight_bot_check(profiles: list[dict]) -> bool:
         _ok_line("DirectLine token", "OK")
         _bot_id = _jwt_claims(dl_token).get("bot")
         if _bot_id:
+            _run_state.agent_id = _bot_id
             _ok_line("Target agent id", _bot_id)
     except Exception as e:
         _fail_line("DirectLine token", f"FAILED — {e}")
@@ -1343,6 +1346,7 @@ def _preflight_bot_check(profiles: list[dict]) -> bool:
             _agent_name = _nm
             break
     if _agent_name:
+        _run_state.agent_name = _agent_name
         _ok_line("Agent", _agent_name)
 
     error_code = None
@@ -3165,6 +3169,12 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
     )
     root.add_row(Panel(hdr, border_style="cyan", padding=(0, 1)))
 
+    # ── Agent under test (own line) ───────────────────────────────────────────
+    if _run_state.agent_name or _run_state.agent_id:
+        _ag = _run_state.agent_name or "—"
+        _aid = f"  ·  id {_run_state.agent_id}" if _run_state.agent_id else ""
+        root.add_row(Text(f"  Agent: {_ag}{_aid}", style="bold cyan"))
+
     # ── Spawning bar (own line) ───────────────────────────────────────────────
     root.add_row(Text(
         f"  {vm['phase_label']}  {spawn_bar}",
@@ -4331,6 +4341,8 @@ def main():
                         silence_timeout=_SILENCE_TIMEOUT,
                         run_config=_params,
                         baseline_csv=_baseline,
+                        agent_name=_run_state.agent_name,
+                        agent_id=_run_state.agent_id,
                     )
                     _rep_q.put(("ok", _rep))
                 except ImportError as _ie:
