@@ -102,6 +102,7 @@ class _TestConfig(dict):
         "max_error_rate":   (0.0, 1.0),
         "users":            (1, 10_000),
         "spawn_rate":       (1, 1_000),
+        "warmup_turns":     (0, 10),
     }
     def __setitem__(self, key: str, value) -> None:
         if key in self._BOUNDS:
@@ -123,6 +124,7 @@ test_config = _TestConfig({
     "spawn_rate":       5,
     "run_time_mins":    5,
     "transport":        os.environ.get("GRUNTMASTER_TRANSPORT", "websocket").lower(),
+    "warmup_turns":     int(os.environ.get("GRUNTMASTER_WARMUP_TURNS", 2)),
 })
 
 from requests.adapters import HTTPAdapter
@@ -170,6 +172,12 @@ ENDPOINT_NEEDS_AUTH = _load_credential("CS_TOKEN_ENDPOINT_REQUIRES_AUTH").lower(
 DIRECTLINE_BASE = "https://directline.botframework.com"
 
 _SILENCE_TIMEOUT    = 15.0    # seconds of silence after last bot reply before declaring response complete
+
+# Throwaway prompts sent on every fresh conversation to warm the agent's greeting,
+# SSO token-exchange, and generative/knowledge orchestration BEFORE any measured
+# utterance — Copilot Studio otherwise answers the first 1–2 turns with a fallback.
+# Cycled if warmup_turns exceeds the list length. Replies are read and discarded.
+_WARMUP_PROMPTS = ["Hello", "Can you help me?"]
 _DIRECTLINE_RPS_CAP = 133.0   # 8000 RPM hard ceiling — knee only meaningful above 75% of this
 
 _GUID_RE = re.compile(
@@ -2391,6 +2399,30 @@ class CopilotBaseUser(User):
 
         self._idx = 0
         self._transport.open(self.conversation, self.environment)
+        self._warmup()
+
+    def _warmup(self):
+        """Send throwaway priming turn(s) on this fresh conversation and discard the
+        replies, so the agent's greeting, SSO token-exchange, and generative/knowledge
+        orchestration are warm before the first *measured* utterance. Not measured and
+        not logged (goes straight through the transport, bypassing _send_and_measure).
+        Failures are non-fatal — a cold-start warm-up is best-effort priming."""
+        turns = int(test_config.get("warmup_turns", 0))
+        if turns <= 0 or self.conversation is None:
+            return
+        _rt = max(15.0, float(test_config.get("response_timeout", 30.0)))
+        for _i in range(turns):
+            if _is_circuit_open():
+                return
+            prompt = _WARMUP_PROMPTS[_i % len(_WARMUP_PROMPTS)]
+            try:
+                activity_id, _send_time, send_mono = send_utterance(self.conversation, prompt)
+                self._transport.read(
+                    activity_id, _rt, self.conversation, self.aad_token, send_mono,
+                )
+            except Exception as e:
+                log.debug("Warm-up turn %d failed (ignored): %s", _i + 1, e)
+                return
 
     def _refresh_stream(self):
         """Refresh stream — same conversation, bot context preserved. Falls back to new conversation."""
@@ -3642,6 +3674,10 @@ Each bar = p95 latency in a 10-minute window. Taller bar = slower responses.
   generation (the raw CSV data is still saved).
 - Results are saved automatically — the HTML report opens after a test that
   finishes on its own (i.e. when you did not press Q).
+- Each fresh conversation sends a few throwaway "warm-up" turns first so the
+  agent's greeting/auth/knowledge are ready — this avoids the Copilot Studio
+  cold-start fallback on the first 1-2 questions. Tune with
+  GRUNTMASTER_WARMUP_TURNS (0 disables); warm-up turns are never measured.
 """
 
 
@@ -3776,6 +3812,12 @@ def _collect_run_params() -> "dict | None":
                            "Fixed — extra wait after bot's last message before declaring response complete"))
         action_keys.append("_silence")
 
+        items.append(_prow("Warm-up turns", int(test_config.get("warmup_turns", 0)), "per convo",
+                           "Throwaway priming messages sent on each fresh conversation before measured "
+                           "utterances — avoids the Copilot Studio cold-start fallback. Set by "
+                           "GRUNTMASTER_WARMUP_TURNS (0 disables)"))
+        action_keys.append("_warmup")
+
         items.append(_prow("Protocol",
                            "HTTP ⚠ TEST MODE" if test_config["transport"] == "http" else "WebSocket 🔒", "",
                            "set by GRUNTMASTER_TRANSPORT env var" if test_config["transport"] == "http"
@@ -3852,6 +3894,11 @@ def _collect_run_params() -> "dict | None":
             )
         elif action == "_silence":
             _gprint(f"  Silence window is fixed at {int(_SILENCE_TIMEOUT)}s — not configurable.",
+                    fg=_G_DIM, padding="0 2")
+        elif action == "_warmup":
+            _gprint(f"  Warm-up sends {int(test_config.get('warmup_turns', 0))} throwaway turn(s) per "
+                    f"conversation to dodge the cold-start fallback.\n"
+                    f"  Change it with the GRUNTMASTER_WARMUP_TURNS environment variable (0 disables).",
                     fg=_G_DIM, padding="0 2")
         elif action == "_protocol":
             _gprint("  Protocol is set by the GRUNTMASTER_TRANSPORT environment variable.",
