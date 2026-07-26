@@ -3422,7 +3422,7 @@ def _render_dashboard(snap: dict, runner, params: dict, state: "_DashboardState"
     )
     root.add_row(Panel(Text(legend, style="dim"), border_style="dim", padding=(0, 1)))
 
-    root.add_row(Text("  Press Q to stop test and go to New Run", style="dim"))
+    root.add_row(Text("  Press Q to stop test now  (skips report — data is still saved)", style="dim"))
     return root
 
 
@@ -3638,8 +3638,10 @@ Each bar = p95 latency in a 10-minute window. Taller bar = slower responses.
 - Run for at least 5 minutes at peak load for stable p95 readings.
 - A T/O rate above 5% means the bot is struggling — reduce Peak users or
   increase Reply timeout.
-- Press Q at any time to stop the test and go straight to results.
-- Results are saved automatically — the HTML report opens after the test.
+- Press Q at any time to stop the test immediately — this skips report
+  generation (the raw CSV data is still saved).
+- Results are saved automatically — the HTML report opens after a test that
+  finishes on its own (i.e. when you did not press Q).
 """
 
 
@@ -4210,6 +4212,7 @@ def main():
         _runner.start(user_count=_params["users"], spawn_rate=_ramp_rate_ps)
 
         _stop_run   = [False]
+        _user_quit  = [False]   # True only when the operator presses Q to abort
         _prev_users = [0]
 
         def _keywatch():
@@ -4220,6 +4223,7 @@ def main():
                         if _m.kbhit():
                             ch = _m.getch()
                             if ch in (b"q", b"Q"):
+                                _user_quit[0] = True
                                 _stop_run[0] = True
                                 return
                             if ch in (b"\x00", b"\xe0") and _m.kbhit():
@@ -4250,6 +4254,7 @@ def main():
                             if _r:
                                 ch = sys.stdin.read(1)
                                 if ch in ("q", "Q"):
+                                    _user_quit[0] = True
                                     _stop_run[0] = True
                                     return
                         except Exception:
@@ -4373,7 +4378,10 @@ def main():
         with _spawn_lock:
             _spawn_counters.clear()
 
-        if _log_path and _log_path.exists():
+        if _log_path and _log_path.exists() and _user_quit[0]:
+            _gprint(f"  ⏭  Report skipped — stopped with Q  (data saved → {_log_path.name})",
+                    fg=_G_DIM, padding="0 2", margin="0 1")
+        elif _log_path and _log_path.exists():
             sys.stdout.write("\n  ⏳  Generating report…")
             sys.stdout.flush()
             # Run in a real OS thread (pre-gevent Thread) so pandas/plotly are
