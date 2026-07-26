@@ -124,7 +124,7 @@ test_config = _TestConfig({
     "spawn_rate":       5,
     "run_time_mins":    5,
     "transport":        os.environ.get("GRUNTMASTER_TRANSPORT", "websocket").lower(),
-    "warmup_turns":     int(os.environ.get("GRUNTMASTER_WARMUP_TURNS", 2)),
+    "warmup_turns":     int(os.environ.get("GRUNTMASTER_WARMUP_TURNS", 4)),
 })
 
 from requests.adapters import HTTPAdapter
@@ -173,11 +173,34 @@ DIRECTLINE_BASE = "https://directline.botframework.com"
 
 _SILENCE_TIMEOUT    = 15.0    # seconds of silence after last bot reply before declaring response complete
 
-# Throwaway prompts sent on every fresh conversation to warm the agent's greeting,
-# SSO token-exchange, and generative/knowledge orchestration BEFORE any measured
-# utterance — Copilot Studio otherwise answers the first 1–2 turns with a fallback.
-# Cycled if warmup_turns exceeds the list length. Replies are read and discarded.
+# Fallback throwaway prompts used only when a profile has no utterances loaded.
+# Normally warm-up replays the profile's OWN first utterances (see _warmup) so the
+# real knowledge/generative pipeline — not just the greeting — is warm before the
+# first measured turn. Copilot Studio otherwise fast-fallbacks the first 1–2 turns.
 _WARMUP_PROMPTS = ["Hello", "Can you help me?"]
+
+# Case-insensitive substrings that mark a cold-start fallback / escalate reply.
+# Warm-up keeps priming until it gets a reply that matches NONE of these (a "real"
+# answer), then the measured test starts. Override for your agent with
+# GRUNTMASTER_WARMUP_FALLBACK_MARKERS (semicolon-separated).
+_WARMUP_FALLBACK_MARKERS = [
+    _m.strip().lower()
+    for _m in os.environ.get(
+        "GRUNTMASTER_WARMUP_FALLBACK_MARKERS",
+        "not sure how to help;not currently configured;escalating to a representative;"
+        "i'm sorry, i'm not sure;i didn't understand;i'm not able to help",
+    ).split(";")
+    if _m.strip()
+]
+
+
+def _looks_like_fallback(text: str) -> bool:
+    """True when a bot reply looks like a cold-start fallback/escalate message, so
+    warm-up should keep priming. Empty replies also count as 'not ready yet'."""
+    if not text or not text.strip():
+        return True
+    t = text.lower()
+    return any(_marker in t for _marker in _WARMUP_FALLBACK_MARKERS)
 _DIRECTLINE_RPS_CAP = 133.0   # 8000 RPM hard ceiling — knee only meaningful above 75% of this
 
 _GUID_RE = re.compile(
@@ -2402,27 +2425,49 @@ class CopilotBaseUser(User):
         self._warmup()
 
     def _warmup(self):
-        """Send throwaway priming turn(s) on this fresh conversation and discard the
-        replies, so the agent's greeting, SSO token-exchange, and generative/knowledge
-        orchestration are warm before the first *measured* utterance. Not measured and
-        not logged (goes straight through the transport, bypassing _send_and_measure).
-        Failures are non-fatal — a cold-start warm-up is best-effort priming."""
-        turns = int(test_config.get("warmup_turns", 0))
-        if turns <= 0 or self.conversation is None:
+        """Prime this fresh conversation until the agent returns a REAL answer (not a
+        cold-start fallback/escalate), then let the measured test begin — so the first
+        *measured* utterance lands on a warm agent. Replays the profile's own utterances
+        (discarded, never measured or logged) and stops as soon as a reply arrives that
+        doesn't look like a fallback. Bounded by warmup_turns attempts; timeouts, errors,
+        and 'still cold after N' are all non-fatal (best-effort priming).
+        Set GRUNTMASTER_WARMUP_TURNS=0 to disable."""
+        attempts = int(test_config.get("warmup_turns", 0))
+        if attempts <= 0 or self.conversation is None:
             return
-        _rt = max(15.0, float(test_config.get("response_timeout", 30.0)))
-        for _i in range(turns):
+        prompts = self.utterances or _WARMUP_PROMPTS
+        if not prompts:
+            return
+        _who = self.profile.get("display_name", self.profile.get("username", "?"))
+        _rt  = max(15.0, float(test_config.get("response_timeout", 30.0)))
+        for _i in range(attempts):
             if _is_circuit_open():
                 return
-            prompt = _WARMUP_PROMPTS[_i % len(_WARMUP_PROMPTS)]
+            prompt = prompts[_i % len(prompts)]
             try:
                 activity_id, _send_time, send_mono = send_utterance(self.conversation, prompt)
-                self._transport.read(
+                resp = self._transport.read(
                     activity_id, _rt, self.conversation, self.aad_token, send_mono,
                 )
             except Exception as e:
-                log.debug("Warm-up turn %d failed (ignored): %s", _i + 1, e)
+                log.debug("Warm-up attempt %d failed (ignored): %s", _i + 1, e)
                 return
+            if getattr(resp, "timed_out", False):
+                continue   # no reply yet — keep priming
+            _text = " | ".join(
+                a.get("text", "").strip()
+                for a in resp.activities
+                if a.get("text", "").strip()
+            )
+            if not _looks_like_fallback(_text):
+                if _run_state.dashboard is not None:
+                    _run_state.dashboard.on_event("◇", f"Warm-up: {_who} ready after {_i + 1} turn(s)")
+                return   # real answer → agent warm → start measuring
+        if _run_state.dashboard is not None:
+            _run_state.dashboard.on_event(
+                "⚠", f"Warm-up: {_who} still cold after {attempts} turn(s) — starting anyway")
+        _log_event("⚠", "warmup_cold",
+                   f"{_who} still returned fallback after {attempts} warm-up turns")
 
     def _refresh_stream(self):
         """Refresh stream — same conversation, bot context preserved. Falls back to new conversation."""
@@ -3674,10 +3719,12 @@ Each bar = p95 latency in a 10-minute window. Taller bar = slower responses.
   generation (the raw CSV data is still saved).
 - Results are saved automatically — the HTML report opens after a test that
   finishes on its own (i.e. when you did not press Q).
-- Each fresh conversation sends a few throwaway "warm-up" turns first so the
-  agent's greeting/auth/knowledge are ready — this avoids the Copilot Studio
-  cold-start fallback on the first 1-2 questions. Tune with
-  GRUNTMASTER_WARMUP_TURNS (0 disables); warm-up turns are never measured.
+- Each fresh conversation is warmed first: the tool replays the profile's own
+  questions and discards the replies until the agent returns a real answer
+  (not a cold-start fallback), then measuring begins — so the first 1-2
+  questions aren't wasted on the Copilot Studio warm-up fallback. Warm-up turns
+  are never measured. Tune with GRUNTMASTER_WARMUP_TURNS (cap, 0 disables) and
+  GRUNTMASTER_WARMUP_FALLBACK_MARKERS (semicolon-separated fallback phrases).
 """
 
 
@@ -3812,10 +3859,10 @@ def _collect_run_params() -> "dict | None":
                            "Fixed — extra wait after bot's last message before declaring response complete"))
         action_keys.append("_silence")
 
-        items.append(_prow("Warm-up turns", int(test_config.get("warmup_turns", 0)), "per convo",
-                           "Throwaway priming messages sent on each fresh conversation before measured "
-                           "utterances — avoids the Copilot Studio cold-start fallback. Set by "
-                           "GRUNTMASTER_WARMUP_TURNS (0 disables)"))
+        items.append(_prow("Warm-up cap", int(test_config.get("warmup_turns", 0)), "turns max",
+                           "Replays the profile's own questions on each fresh conversation until the "
+                           "agent gives a REAL answer (not a cold-start fallback), then measuring "
+                           "starts. Stops early once warm. Set by GRUNTMASTER_WARMUP_TURNS (0 disables)"))
         action_keys.append("_warmup")
 
         items.append(_prow("Protocol",
@@ -3896,9 +3943,11 @@ def _collect_run_params() -> "dict | None":
             _gprint(f"  Silence window is fixed at {int(_SILENCE_TIMEOUT)}s — not configurable.",
                     fg=_G_DIM, padding="0 2")
         elif action == "_warmup":
-            _gprint(f"  Warm-up sends {int(test_config.get('warmup_turns', 0))} throwaway turn(s) per "
-                    f"conversation to dodge the cold-start fallback.\n"
-                    f"  Change it with the GRUNTMASTER_WARMUP_TURNS environment variable (0 disables).",
+            _gprint(f"  Warm-up replays the profile's own questions on each fresh conversation "
+                    f"until the agent\n  gives a real answer (up to {int(test_config.get('warmup_turns', 0))} "
+                    f"turns), then measuring starts — dodging the cold-start fallback.\n"
+                    f"  Tune with GRUNTMASTER_WARMUP_TURNS (0 disables) and "
+                    f"GRUNTMASTER_WARMUP_FALLBACK_MARKERS.",
                     fg=_G_DIM, padding="0 2")
         elif action == "_protocol":
             _gprint("  Protocol is set by the GRUNTMASTER_TRANSPORT environment variable.",
