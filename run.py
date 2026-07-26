@@ -4088,6 +4088,39 @@ def main():
                     except Exception:
                         pass
                     gevent.sleep(0.05)
+            else:
+                # POSIX (Linux/macOS, incl. Docker): read stdin in cbreak mode so a
+                # single 'q' keypress registers without waiting for Enter.
+                try:
+                    import termios, tty
+                    import select as _select
+                except Exception:
+                    return
+                try:
+                    if not sys.stdin.isatty():
+                        return
+                    _fd = sys.stdin.fileno()
+                    _old = termios.tcgetattr(_fd)
+                except Exception:
+                    return
+                try:
+                    tty.setcbreak(_fd)
+                    while not _stop_run[0]:
+                        try:
+                            _r, _, _ = _select.select([sys.stdin], [], [], 0)
+                            if _r:
+                                ch = sys.stdin.read(1)
+                                if ch in ("q", "Q"):
+                                    _stop_run[0] = True
+                                    return
+                        except Exception:
+                            pass
+                        gevent.sleep(0.05)
+                finally:
+                    try:
+                        termios.tcsetattr(_fd, termios.TCSADRAIN, _old)
+                    except Exception:
+                        pass
 
         _kw = gevent.spawn(_keywatch)
 
