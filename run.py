@@ -1262,6 +1262,9 @@ def _preflight_bot_check(profiles: list[dict]) -> bool:
         dl_token = _spin("Fetching DirectLine token…",
                          lambda: fetch_directline_token(aad_token_for_bot))
         _ok_line("DirectLine token", "OK")
+        _bot_id = _jwt_claims(dl_token).get("bot")
+        if _bot_id:
+            _ok_line("Target agent id", _bot_id)
     except Exception as e:
         _fail_line("DirectLine token", f"FAILED — {e}")
         print()
@@ -1352,6 +1355,15 @@ def _preflight_bot_check(profiles: list[dict]) -> bool:
         return False
 
     first_reply = response.activities[0].get("text", "").strip()
+
+    _agent_name = None
+    for _a in response.activities:
+        _nm = _a.get("from", {}).get("name")
+        if _nm:
+            _agent_name = _nm
+            break
+    if _agent_name:
+        _ok_line("Agent", _agent_name)
 
     error_code = None
     m = re.search(r"Error code:\s*(\S+)", first_reply)
