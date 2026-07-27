@@ -173,6 +173,15 @@ DIRECTLINE_BASE = "https://directline.botframework.com"
 
 _SILENCE_TIMEOUT    = 15.0    # seconds of silence after last bot reply before declaring response complete
 
+# WebSocket resilience. Slow, knowledge-grounded agents stream nothing for tens of
+# seconds while composing, so DirectLine / the Azure edge close the "idle" stream
+# mid-answer and the reply is lost. We (a) allow a longer connect handshake and
+# (b) send a keepalive ping whenever a recv() slice elapses with no frame, so the
+# socket never looks idle. The ping loop does NOT extend the reply deadline (that
+# stays enforced per-turn), so measured response times are unaffected.
+_WS_CONNECT_TIMEOUT = float(os.environ.get("GRUNTMASTER_WS_CONNECT_TIMEOUT", "30"))  # WebSocket open handshake (was 20)
+_WS_PING_INTERVAL   = float(os.environ.get("GRUNTMASTER_WS_PING_INTERVAL", "15"))    # keepalive ping cadence while awaiting a reply
+
 # Fallback throwaway prompts used only when a profile has no utterances loaded.
 # Normally warm-up replays the profile's OWN first utterances (see _warmup) so the
 # real knowledge/generative pipeline — not just the greeting — is warm before the
@@ -407,7 +416,7 @@ def refresh_stream(conversation: Conversation) -> websocket.WebSocket:
 
 def open_websocket(stream_url: str) -> websocket.WebSocket:
     ws = websocket.WebSocket(sslopt={"check_hostname": True})
-    ws.connect(stream_url, timeout=20)
+    ws.connect(stream_url, timeout=_WS_CONNECT_TIMEOUT)
     return ws
 
 
@@ -480,11 +489,30 @@ def read_response(
         )
         if remaining <= 0:
             break
+        # Keepalive slicing: cap each blocking recv() at a ping interval so a slow,
+        # silent agent never leaves the socket idle long enough for DirectLine / the
+        # Azure edge to drop it mid-answer. The real per-turn deadline is still
+        # enforced by `remaining <= 0` at the top of the loop, so this neither
+        # extends the wait nor changes measured latency — recv() still returns the
+        # instant the bot's data frame arrives.
+        slice_timeout = min(remaining, _WS_PING_INTERVAL)
         try:
-            ws.settimeout(remaining)
+            ws.settimeout(slice_timeout)
             raw = ws.recv()
         except websocket.WebSocketTimeoutException:
-            break
+            # Idle slice elapsed with no frame. Send a keepalive ping and keep
+            # listening; the pong is a control frame swallowed by recv(), never
+            # seen as a reply. If the overall deadline has now passed, the top of
+            # the loop breaks on the next pass and the turn is recorded as timed out.
+            try:
+                ws.ping()
+            except Exception as _pexc:
+                if _run_state.dashboard is not None:
+                    _run_state.dashboard.on_event("⚠", f"Keepalive ping failed ({type(_pexc).__name__}) — reconnecting")
+                _log_event("⚠", "ws_error", f"Keepalive ping failed: {type(_pexc).__name__}")
+                return Response(activities=[], latency_ms=(time.monotonic()-start_time)*1000,
+                                timed_out=True, ws_closed=True)
+            continue
         except websocket.WebSocketConnectionClosedException:
             if _run_state.dashboard is not None:
                 _run_state.dashboard.on_event("⚠", "DirectLine closed WebSocket — reconnecting")
