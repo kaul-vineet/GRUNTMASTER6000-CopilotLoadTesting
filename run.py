@@ -2207,8 +2207,25 @@ _csv_files     = sorted(UTTERANCES_DIR.glob("*.csv"))
 
 
 def _load_utterances(path: Path) -> list[str]:
+    # Single-column CSV (header: "utterance"). We deliberately tolerate rows whose
+    # surrounding quotes were stripped by an external editor (e.g. Excel re-saving
+    # the file): without quotes, csv splits "In Dr. Mario, what…" on the comma and
+    # DictReader drops everything after the first comma into the overflow key,
+    # silently truncating the utterance. Re-join that overflow so a comma inside an
+    # utterance is preserved whether or not the row is quoted.
+    rows: list[str] = []
     with open(path, newline="") as f:
-        rows = [r["utterance"] for r in csv.DictReader(f)]
+        reader = csv.DictReader(f)
+        if not reader.fieldnames or "utterance" not in reader.fieldnames:
+            raise RuntimeError(f"Utterances file missing 'utterance' header column: {path}")
+        for r in reader:
+            text = r.get("utterance") or ""
+            overflow = r.get(None)  # extra fields when an unquoted row contained commas
+            if overflow:
+                text = ",".join([text, *overflow])
+            text = text.strip()
+            if text:
+                rows.append(text)
     if not rows:
         raise RuntimeError(f"Utterances file is empty: {path}")
     return rows
